@@ -77,8 +77,8 @@ def transcribe_with_whisper(audio_file: str, max_chars: int = 24) -> list[dict]:
     ]
 
     try:
-        logger.info(f"Running GPU Whisper transcription on {audio_file}...")
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        logger.info(f"Running Whisper transcription on {audio_file}...")
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         
         if not os.path.exists(temp_json):
             logger.warning(f"Whisper JSON output missing: {temp_json}")
@@ -116,6 +116,9 @@ def transcribe_with_whisper(audio_file: str, max_chars: int = 24) -> list[dict]:
         logger.info(f"Whisper transcribed {len(timed_phrases)} phrases successfully.")
         return timed_phrases
 
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Whisper process error (exit code {e.returncode}): {e.stderr}")
+        return []
     except Exception as e:
         logger.error(f"Error during whisper transcription: {e}")
         return []

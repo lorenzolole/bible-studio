@@ -194,11 +194,18 @@ def fetch_passage_text(book_str: str, chapter: int) -> dict:
         with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
             html = resp.read().decode("utf-8")
         
-        clean_html = re.sub(r'<sup class="footnote"[^>]*>.*?</sup>', '', html)
-        clean_html = re.sub(r'<sup class="crossreference"[^>]*>.*?</sup>', '', clean_html)
+        clean_html = re.sub(r'<sup class="footnote"[^>]*>.*?</sup>', '', html, flags=re.DOTALL)
+        clean_html = re.sub(r'<sup class="crossreference"[^>]*>.*?</sup>', '', clean_html, flags=re.DOTALL)
+        clean_html = re.sub(r'<span class="chapternum"[^>]*>.*?</span>', '', clean_html, flags=re.DOTALL)
+        clean_html = re.sub(r'<sup class="versenum"[^>]*>.*?</sup>', '', clean_html, flags=re.DOTALL)
         
-        matches = re.findall(r'<span class="text [^"]*">([^<]+)</span>', clean_html)
-        full_text = " ".join(matches)
+        spans = re.findall(r'<span[^>]*class="text [^"]*"[^>]*>(.*?)</span>', clean_html, flags=re.DOTALL)
+        texts = []
+        for s in spans:
+            t = re.sub(r'<[^>]+>', '', s).strip()
+            if t:
+                texts.append(t)
+        full_text = " ".join(texts)
         full_text = re.sub(r'\s+', ' ', full_text).strip()
         
         return {

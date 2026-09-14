@@ -117,8 +117,12 @@ async def get_chapter_transcription(book: str, chapter: int):
         
         json_path = f"{raw_audio}.json"
         if not os.path.exists(json_path):
-            cmd = ["whisper-cli", "-m", subtitles.WHISPER_MODEL, "-f", raw_audio, "-oj", "--no-prints"]
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            whisper_bin = subtitles.find_whisper_cli() or "whisper-cli"
+            cmd = [whisper_bin, "-m", subtitles.WHISPER_MODEL, "-f", raw_audio, "-oj", "-of", raw_audio, "--no-prints"]
+            try:
+                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as err:
+                logger.warning(f"Chapter-wide whisper skipped or failed: {err}")
             
         if os.path.exists(json_path):
             with open(json_path, "r", encoding="utf-8") as f:
@@ -161,9 +165,19 @@ async def transcribe_audio_segment(req: TranscribeRequest):
 
         phrases = subtitles.transcribe_with_whisper(temp_voice, max_chars=26)
         if not phrases:
+            # Fallback to chapter text aligned proportionally to the selected time range
             passage = downloader.fetch_passage_text(req.book, req.chapter)
-            txt = passage.get("text", "")
-            phrases = subtitles.generate_timed_subtitles(txt, req.end_sec - req.start_sec)
+            full_txt = passage.get("text", "")
+            if full_txt:
+                total_duration = audio_engine.get_audio_duration(raw_audio) or max(req.end_sec, 1.0)
+                ratio = max(0.0, min(1.0, req.start_sec / max(1.0, total_duration)))
+                words = full_txt.split()
+                start_idx = int(ratio * len(words))
+                segment_duration = max(1.0, req.end_sec - req.start_sec)
+                num_words = max(8, int(segment_duration * 2.8))
+                segment_words = words[start_idx : start_idx + num_words]
+                txt = " ".join(segment_words)
+                phrases = subtitles.generate_timed_subtitles(txt, segment_duration)
 
         if os.path.exists(temp_voice):
             os.remove(temp_voice)

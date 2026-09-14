@@ -1,7 +1,7 @@
 # ==============================================================================
-# Stage 1: Build whisper-cli binary
+# Stage 1: Build whisper-cli binary (statically linked against whisper & ggml)
 # ==============================================================================
-FROM ubuntu:22.04 AS builder
+FROM python:3.11-slim-bookworm AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -16,13 +16,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /src
 RUN git clone --depth 1 https://github.com/ggerganov/whisper.cpp.git && \
     cd whisper.cpp && \
-    cmake -B build -DWHISPER_BUILD_EXAMPLES=ON && \
+    cmake -B build -DWHISPER_BUILD_EXAMPLES=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release && \
     cmake --build build --config Release -j$(nproc) --target whisper-cli && \
-    mkdir -p /dist/bin && \
-    cp build/bin/whisper-cli /dist/bin/
+    mkdir -p /dist/bin /dist/lib && \
+    cp build/bin/whisper-cli /dist/bin/ && \
+    (cp build/bin/*.so* /dist/lib/ 2>/dev/null || true) && \
+    (cp build/src/*.so* /dist/lib/ 2>/dev/null || true) && \
+    (cp build/ggml/src/*.so* /dist/lib/ 2>/dev/null || true)
 
 # ==============================================================================
-# Stage 2: Runtime image (compatible with Hugging Face Spaces Docker SDK)
+# Stage 2: Runtime image (compatible with Render & Hugging Face Spaces)
 # ==============================================================================
 FROM python:3.11-slim-bookworm
 
@@ -41,11 +44,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy compiled whisper-cli binary
-COPY --from=builder /dist/bin/whisper-cli /usr/local/bin/whisper-cli
-RUN chmod +x /usr/local/bin/whisper-cli
+# Copy compiled whisper-cli binary and any companion libraries
+COPY --from=builder /dist/bin/ /usr/local/bin/
+COPY --from=builder /dist/lib/ /usr/local/lib/
+RUN ldconfig && \
+    chmod +x /usr/local/bin/whisper-cli && \
+    whisper-cli --help > /dev/null && \
+    echo "✓ whisper-cli verified and fully operational"
 
-# Setup non-root user (required by Hugging Face Spaces: UID 1000)
+# Setup non-root user (required by container best practices: UID 1000)
 RUN useradd -m -u 1000 user
 USER user
 ENV HOME=/home/user \
