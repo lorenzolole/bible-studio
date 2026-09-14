@@ -227,12 +227,15 @@ def build_slideshow_video(
 
     filter_complex = "".join(filter_chains).rstrip(";")
 
-    cmd = ["ffmpeg", "-y"] + inputs + [
+    threads = os.environ.get("FFMPEG_THREADS", "2")
+    preset = os.environ.get("FFMPEG_PRESET", "veryfast")
+
+    cmd = ["ffmpeg", "-y", "-threads", threads] + inputs + [
         "-filter_complex", filter_complex,
         "-map", "[vfinal]",
         "-t", f"{target_duration:.2f}",
         "-c:v", "libx264",
-        "-preset", "fast",
+        "-preset", preset,
         "-pix_fmt", "yuv420p",
         output_path
     ]
@@ -411,16 +414,20 @@ def render_tiktok_video(
 
     filter_complex = "".join(filter_parts).rstrip(";")
 
+    threads = os.environ.get("FFMPEG_THREADS", "2")
+    preset = os.environ.get("FFMPEG_PRESET", "veryfast")
+
     cmd = [
-        "ffmpeg", "-y"
+        "ffmpeg", "-y",
+        "-threads", threads
     ] + inputs + [
         "-filter_complex", filter_complex,
         "-map", final_v_label,
         "-map", f"{audio_idx}:a",
         "-t", f"{duration:.2f}",
         "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "20",
+        "-preset", preset,
+        "-crf", "22",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", "192k",
