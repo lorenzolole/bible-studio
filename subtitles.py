@@ -63,12 +63,30 @@ def transcribe_with_whisper(audio_file: str, max_chars: int = 24) -> list[dict]:
         return []
 
     temp_out_base = os.path.join(CACHE_DIR, f"whisper_{abs(hash(audio_file)) % 1000000}")
+    temp_wav = f"{temp_out_base}.wav"
     temp_json = f"{temp_out_base}.json"
+
+    # Convert audio segment to 16kHz mono WAV for fast, native whisper.cpp processing
+    wav_target = audio_file
+    try:
+        conv_cmd = [
+            "ffmpeg", "-y", "-i", audio_file,
+            "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
+            temp_wav
+        ]
+        subprocess.run(conv_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.path.exists(temp_wav):
+            wav_target = temp_wav
+    except Exception as conv_err:
+        logger.warning(f"WAV pre-conversion failed ({conv_err}), falling back to direct audio")
+
+    threads = os.environ.get("WHISPER_THREADS", "2")
 
     cmd = [
         whisper_cli,
         "-m", WHISPER_MODEL,
-        "-f", audio_file,
+        "-f", wav_target,
+        "-t", threads,
         "-ml", str(max_chars),
         "-sow",
         "-oj",
@@ -77,7 +95,7 @@ def transcribe_with_whisper(audio_file: str, max_chars: int = 24) -> list[dict]:
     ]
 
     try:
-        logger.info(f"Running Whisper transcription on {audio_file}...")
+        logger.info(f"Running Whisper transcription on {wav_target} (threads={threads})...")
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         
         if not os.path.exists(temp_json):
@@ -109,10 +127,6 @@ def transcribe_with_whisper(audio_file: str, max_chars: int = 24) -> list[dict]:
                 "text": text
             })
 
-        # Clean up temporary json
-        if os.path.exists(temp_json):
-            os.remove(temp_json)
-
         logger.info(f"Whisper transcribed {len(timed_phrases)} phrases successfully.")
         return timed_phrases
 
@@ -122,6 +136,17 @@ def transcribe_with_whisper(audio_file: str, max_chars: int = 24) -> list[dict]:
     except Exception as e:
         logger.error(f"Error during whisper transcription: {e}")
         return []
+    finally:
+        if os.path.exists(temp_wav):
+            try:
+                os.remove(temp_wav)
+            except Exception:
+                pass
+        if os.path.exists(temp_json):
+            try:
+                os.remove(temp_json)
+            except Exception:
+                pass
 
 def split_text_into_phrases(text: str, max_words: int = 5) -> list[str]:
     """Split text into short natural phrases."""

@@ -183,6 +183,13 @@ async function loadChapterAudio(customStart = null, customEnd = null, customCita
     btnLoadChapter.disabled = true;
     btnLoadChapter.innerHTML = "Descargando...";
 
+    // Clear stale phrases immediately
+    state.phrases = [];
+    renderPhrasesList();
+    if (spokenScriptText) {
+        spokenScriptText.innerHTML = `<span class="loading-pulse">🪄 Cargando audio y sincronizando pasaje...</span>`;
+    }
+
     try {
         const res = await fetch(`/api/chapter_info?book=${bookOsis}&chapter=${chapter}`);
         const data = await res.json();
@@ -287,8 +294,9 @@ function renderInteractivePhrases(phrases) {
 
 // 4. SUBTITLES & AI WHISPER TRANSCRIPTION
 let transcribeDebounceTimer = null;
+let transcribeAbortController = null;
 
-function scheduleSegmentTranscribe(delay = 300) {
+function scheduleSegmentTranscribe(delay = 500) {
     if (transcribeDebounceTimer) clearTimeout(transcribeDebounceTimer);
     if (spokenScriptText) {
         spokenScriptText.innerHTML = `<span class="loading-pulse">🪄 Sincronizando palabras con David Suchet...</span>`;
@@ -324,9 +332,16 @@ async function autoTranscribeCurrentSegment() {
     const start = parseFloat(startSecInput.value) || 0;
     const end = parseFloat(endSecInput.value) || 15;
 
+    // Abort any ongoing in-flight request to avoid race conditions and stale text overwrites
+    if (transcribeAbortController) {
+        transcribeAbortController.abort();
+    }
+    transcribeAbortController = new AbortController();
+    const currentSignal = transcribeAbortController.signal;
+
     transcribeStatus.textContent = "Sincronizando con Whisper AI...";
-    if (spokenScriptText && !spokenScriptText.innerHTML.includes("loading-pulse")) {
-        spokenScriptText.innerHTML = `<span class="loading-pulse">Sincronizando palabras con David Suchet...</span>`;
+    if (spokenScriptText) {
+        spokenScriptText.innerHTML = `<span class="loading-pulse">🪄 Sincronizando palabras con David Suchet...</span>`;
     }
     btnAutoTranscribe.disabled = true;
 
@@ -334,6 +349,7 @@ async function autoTranscribeCurrentSegment() {
         const res = await fetch("/api/transcribe", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
+            signal: currentSignal,
             body: JSON.stringify({
                 book: bookSelect.value,
                 chapter: parseInt(chapterSelect.value),
@@ -355,8 +371,12 @@ async function autoTranscribeCurrentSegment() {
         }
 
     } catch (e) {
+        if (e.name === "AbortError") {
+            // Superseded by newer request, cleanly ignore
+            return;
+        }
         console.error("Transcription error:", e);
-        transcribeStatus.textContent = "Sincronizado por pasaje";
+        transcribeStatus.textContent = "Error de sincronización";
         updateSpokenScriptPreview();
     } finally {
         btnAutoTranscribe.disabled = false;

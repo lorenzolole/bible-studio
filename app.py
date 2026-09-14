@@ -44,6 +44,18 @@ app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 app.mount("/thumbnails", StaticFiles(directory=THUMBS_DIR), name="thumbnails")
 app.mount("/outputs", StaticFiles(directory=OUTPUTS_DIR), name="outputs")
 
+PRESETS_TRANS_PATH = os.path.join(ASSETS_DIR, "preset_transcriptions.json")
+PRESET_TRANSCRIPTIONS = {}
+if os.path.exists(PRESETS_TRANS_PATH):
+    try:
+        with open(PRESETS_TRANS_PATH, "r", encoding="utf-8") as f:
+            PRESET_TRANSCRIPTIONS = json.load(f)
+        logger.info(f"Loaded {len(PRESET_TRANSCRIPTIONS)} pre-calibrated transcriptions.")
+    except Exception as e:
+        logger.warning(f"Failed to load preset transcriptions: {e}")
+
+SESSION_TRANSCRIPTION_CACHE = {}
+
 class TranscribeRequest(BaseModel):
     book: str
     chapter: int
@@ -155,6 +167,16 @@ async def transcribe_audio_segment(req: TranscribeRequest):
         if not book_info:
             raise HTTPException(status_code=400, detail="Invalid book")
         osis = book_info["osis"]
+        
+        # 1. Instant return for pre-calibrated viral presets (0ms)
+        cache_key = f"{osis}_{req.chapter}_{req.start_sec:.1f}_{req.end_sec:.1f}"
+        if cache_key in PRESET_TRANSCRIPTIONS:
+            return {"success": True, "phrases": PRESET_TRANSCRIPTIONS[cache_key], "cached": True}
+
+        # 2. Instant return for session cached segments
+        if cache_key in SESSION_TRANSCRIPTION_CACHE:
+            return {"success": True, "phrases": SESSION_TRANSCRIPTION_CACHE[cache_key], "cached": True}
+
         raw_audio = os.path.join(CACHE_DIR, "audio", f"{osis}_{req.chapter}.mp3")
         if not os.path.exists(raw_audio):
             downloader.download_audio_chapter(req.book, req.chapter)
@@ -181,6 +203,9 @@ async def transcribe_audio_segment(req: TranscribeRequest):
 
         if os.path.exists(temp_voice):
             os.remove(temp_voice)
+
+        if phrases:
+            SESSION_TRANSCRIPTION_CACHE[cache_key] = phrases
 
         return {"success": True, "phrases": phrases}
     except Exception as e:

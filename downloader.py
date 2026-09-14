@@ -1,6 +1,7 @@
 import os
 import re
 import ssl
+import html as html_lib
 import urllib.request
 import logging
 
@@ -192,9 +193,9 @@ def fetch_passage_text(book_str: str, chapter: int) -> dict:
     
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
-            html = resp.read().decode("utf-8")
+            raw_html = resp.read().decode("utf-8")
         
-        clean_html = re.sub(r'<sup class="footnote"[^>]*>.*?</sup>', '', html, flags=re.DOTALL)
+        clean_html = re.sub(r'<sup class="footnote"[^>]*>.*?</sup>', '', raw_html, flags=re.DOTALL)
         clean_html = re.sub(r'<sup class="crossreference"[^>]*>.*?</sup>', '', clean_html, flags=re.DOTALL)
         clean_html = re.sub(r'<span class="chapternum"[^>]*>.*?</span>', '', clean_html, flags=re.DOTALL)
         clean_html = re.sub(r'<sup class="versenum"[^>]*>.*?</sup>', '', clean_html, flags=re.DOTALL)
@@ -204,7 +205,10 @@ def fetch_passage_text(book_str: str, chapter: int) -> dict:
         for s in spans:
             t = re.sub(r'<[^>]+>', '', s).strip()
             if t:
-                texts.append(t)
+                t = html_lib.unescape(t).replace('\xa0', ' ').replace('&nbsp;', ' ')
+                t = re.sub(r'\s+', ' ', t).strip()
+                if t:
+                    texts.append(t)
         full_text = " ".join(texts)
         full_text = re.sub(r'\s+', ' ', full_text).strip()
         
