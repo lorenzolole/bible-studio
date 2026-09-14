@@ -77,6 +77,7 @@ python3 create_clip.py --book "Salmos" --chapter 23 --start 0 --end 15 --citatio
 - `audio_engine.py`: Audio processing pipeline with vocal compression and music ducking.
 - `subtitles.py`: ASS subtitle generator with whisper-cli word-level (DTW) transcription.
 - `transcripts.py`: Per-chapter word transcripts, sliced instantly for any clip.
+- `text_alignment.py`: Aligns Whisper word timings with the official NIV-UK text.
 - `bake_transcripts.py`: Pre-generates transcripts for popular chapters into `assets/transcripts/`.
 - `video_engine.py`: FFmpeg vertical video compositor with motion & vignette filters.
 - `create_clip.py`: Command-line batch generator.

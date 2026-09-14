@@ -1,0 +1,13 @@
+.git
+.github
+.DS_Store
+**/__pycache__
+*.pyc
+cache/*
+!cache/.gitkeep
+outputs/*
+!outputs/.gitkeep
+models/*.bin
+assets/overlays/*.mov
+assets/overlays/*.mkv
+.env

@@ -42,3 +42,4 @@ assets/overlays/*.mov
 
 # Partially written transcripts while bake_transcripts.py runs
 assets/transcripts/*.tmp
+assets/overlays/*.mkv

@@ -6,7 +6,7 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
 
 ## 📌 Contexto Rápido & Enlaces Oficiales
 
-- **Nombre del Proyecto**: Bible Studio *(v3.3.0 — renombrado desde TikTok Bible Studio)*.
+- **Nombre del Proyecto**: Bible Studio *(v3.4.0 — renombrado desde TikTok Bible Studio)*.
 - **Repositorio Oficial en GitHub**: [https://github.com/lorenzolole/bible-studio](https://github.com/lorenzolole/bible-studio)
   - **Cuenta GitHub Activa**: `lorenzolole`
   - **Rama Principal**: `main`
@@ -42,7 +42,7 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
 
 - **Backend**: Python 3.11/3.13 + FastAPI + Uvicorn + Pydantic.
 - **IA / Speech-to-Text**: `whisper-cli` (whisper.cpp v1.9.4) con modelo `ggml-base.en.bin` (en local acelerado por Metal GPU; en Docker compilado estáticamente para CPU).
-- **Procesamiento de Video & Audio**: FFmpeg 8.0 (con filtros de escala, ASS subtitles, compand, boxblur, alphamerge).
+- **Procesamiento de Video & Audio**: FFmpeg 8.0 en la Mac; en Docker el `ffmpeg` de Debian bookworm (5.1). Filtros usados: `movie`, `zoompan`, `alphamerge`, `overlay`, `noise`, `subtitles` (libass), `compand`, `boxblur`.
 - **Manipulación Gráfica**: Pillow (máscaras antialiased, generación de overlays de partículas).
 - **Frontend**: HTML5 + CSS3 (Apple/Linear dark mode sobrio) + Vanilla JS reactivo.
 - **Infraestructura**: Docker multi-stage build (`Dockerfile`), optimizado para Render y Hugging Face Spaces.
@@ -51,15 +51,16 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
 
 ## 📁 Estructura del Repositorio
 
-- `app.py`: Servidor FastAPI, endpoints REST (`/api/books`, `/api/chapter_info`, `/api/chapter_transcription`, `/api/transcribe`, `/api/render`, `/api/presets`, `/api/videos`). `get_clip_phrases()` resuelve los subtítulos de un clip: transcripción del capítulo → `SESSION_TRANSCRIPTION_CACHE` → Whisper del clip → estimación por texto. Los endpoints pesados son `def` (threadpool) y el render está serializado con `RENDER_LOCK`.
-- `transcripts.py`: Transcripciones palabra por palabra por capítulo. Se transcribe el capítulo una vez y cada clip se sirve recortando palabras (0 Whisper al mover el timeline). Lee `assets/transcripts/` (horneadas) y `cache/transcripts/` (runtime).
-- `bake_transcripts.py`: Hornea transcripciones de capítulos populares en la Mac (Metal) para commitearlas: `WHISPER_THREADS=8 python3 bake_transcripts.py [LIBRO CAP ...] [--force]`.
+- `app.py`: Servidor FastAPI. Endpoints: `/api/books`, `/api/chapter_info`, `/api/chapter_transcription`, `/api/transcribe` + `/api/transcribe_status`, `/api/render` + `/api/render_status`, `/api/presets`, `/api/videos`, `/api/upload_visual`, `/api/upload_music`, `/api/health`. Transcripciones con Whisper y renders corren como jobs en threads (`TRANSCRIBE_JOBS`, `RENDER_JOBS`) que el navegador consulta. `RENDER_LOCK` es el mismo `RLock` que Whisper: un solo trabajo pesado a la vez. Valida rutas de fondos/música (`resolve_media_path`: solo `assets/` y uploads), sanea uploads y limpia temporales (`prune_cache`).
+- `transcripts.py`: Transcripciones palabra por palabra por capítulo, alineadas con el texto oficial. `get_clip_phrases()` resuelve los subtítulos de un clip: recorte de la transcripción del capítulo → `SESSION_CLIP_CACHE` → Whisper del clip (alineado) → estimación por texto. Lee `assets/transcripts/` (horneadas) y `cache/transcripts/` (runtime).
+- `text_alignment.py`: `align_words_to_text()` conserva los tiempos de Whisper y toma palabras, puntuación y mayúsculas del NIV-UK (difflib; si coincide menos del 60% no toca nada).
+- `bake_transcripts.py`: Hornea transcripciones en la Mac (Metal) para commitearlas: `WHISPER_THREADS=8 python3 bake_transcripts.py [LIBRO CAP ...] [--force] [--keep-audio]`. `--realign` alinea con el texto oficial las ya horneadas.
 - `downloader.py`: Motor de scraping y descarga de audio de David Suchet y texto bíblico de BibleGateway. Limpieza de encabezados HTML (`<h1-h6>`), notas al pie, spans anidados (small-caps "LORD", palabras de Jesús) y entidades `&nbsp;`.
 - `audio_engine.py`: Recorte de audio con `ffmpeg`, compresión vocal broadcast y mezcla con música duckeada.
 - `subtitles.py`: Descubrimiento de `whisper-cli`, `transcribe_words()` (WAV 16kHz + JSON completo + timestamps DTW, un Whisper a la vez con `WHISPER_LOCK`), `words_to_phrases()` (agrupa palabras en frases cortando por puntuación) y formateo de subtítulos `.ass`.
-- `video_engine.py`: Motor de composición de video vertical 1080×1920 con control de hilos (`-threads 2`) y preset (`veryfast`) para no exceder 512 MB RAM.
-- `create_clip.py`: Interfaz de línea de comandos (CLI) para generación por lotes.
-- `generate_overlays.py`: Generador autónomo de las capas de polvo celestial y fuga de luz.
+- `video_engine.py`: Motor de composición 1080×1920. Todo FFmpeg pasa por `_run_ffmpeg()` (progreso por cuadros vía `-progress`, error con el final de stderr). Reglas de memoria para no pasar los 512 MB: fuentes de video como filtros `movie=` (no `-i`), todo a 30 fps, `THREAD_CAPS` + `-threads 1` por input + `FFMPEG_THREADS` en el encoder, zoom calculado al tamaño final.
+- `create_clip.py`: Interfaz de línea de comandos (CLI) para generación por lotes, con subtítulos sincronizados.
+- `generate_overlays.py`: Genera las capas de polvo celestial y fuga de luz (`assets/overlays/*.mkv`, FFV1 `yuva420p`; se crean en el build de Docker).
 - `static/app.js`: Lógica del cliente, scrubber del timeline, snapping interactivo, e integración de `AbortController` para evitar condiciones de carrera.
 - `static/style.css`: Estilos de la aplicación.
 - `templates/index.html`: Plantilla principal del estudio web.
@@ -71,7 +72,15 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
 
 ---
 
-## ⚡ Cambios Recientes Realizados (v3.3.0)
+## ⚡ Cambios Recientes Realizados (v3.4.0)
+
+1. **Render en producción arreglado**: FFmpeg llegaba a ~826 MB y el contenedor moría (502). Pico medido ahora: ~300–380 MB. Ver reglas de memoria en `video_engine.py`; no volver a usar entradas `-i` para overlays ni `.mov` ARGB.
+2. **Render como job**: `POST /api/render` → `{pending, job_id}`; `GET /api/render_status` → etapa (`queue`, `subtitles`, `audio`, `visual`, `encode`, `thumbnail`), `progress`, `eta_sec`, y al terminar `video_url`/`filename`. El frontend (`waitForRenderJob`) muestra el avance en la tarjeta de render.
+3. **Subtítulos alineados con el texto oficial**: las 617 transcripciones tienen `"aligned": true`. Los clips no horneados se alinean en vivo contra el capítulo (`downloader.fetch_passage_text` cachea el texto en memoria).
+4. **Botones virales recalibrados** al rango exacto de cada versículo (`data-start`/`data-end` en `templates/index.html`).
+5. **Frases del editor**: el navegador solo manda `phrases` al render si fueron transcriptas para el clip actual (`state.phrasesClip`); si no, el servidor las sincroniza.
+
+### v3.3.0
 
 1. **Jobs de transcripción con progreso**: si el clip no sale de una transcripción de capítulo ni del caché de sesión, `/api/transcribe` crea un job en un thread (`TRANSCRIBE_JOBS`) y devuelve `{"pending": true, "job_id", "stage", "progress"}`. El frontend (`waitForTranscribeJob` en `app.js`) consulta `GET /api/transcribe_status?job_id=` y muestra etapa, % y ETA en `#clipProgress`. Los jobs terminados se limpian a los 10 min.
 2. **ETA**: `subtitles.estimate_whisper_seconds()` usa una velocidad aprendida (EMA) inicializada con `WHISPER_SEC_PER_AUDIO_SEC` (default 0.5; Docker 3.5) y se combina con el `-pp` de whisper-cli, que avanza por ventanas de 30s.
@@ -110,10 +119,11 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
 1. **Capítulos No Horneados en la Nube (CPU Throttling)**:
    - Los capítulos de `assets/transcripts/` responden al instante. Un capítulo no horneado (ej. *Levítico 15*) en Render sigue necesitando Whisper por clip en 0.1 vCPU, y el lector de capítulo no muestra marcas de tiempo.
    - *Para sumar capítulos*: agregarlos a `POPULAR_CHAPTERS` en `bake_transcripts.py` (o pasarlos por argumento), correrlo en la Mac y commitear los JSON.
-   - *Pendiente*: alinear palabras de Whisper con el texto oficial NIV-UK (corrige nombres mal oídos, ej. "Curia Thaba" por "Kiriath Arba"), recalibrar los rangos de los botones virales usando las palabras horneadas (Proverbios 3 e Isaías 41 arrancan con la cola del versículo anterior).
+   - Para capítulos nuevos: hornearlos y después correr `python3 bake_transcripts.py --realign` (el horneado nuevo ya sale alineado; `--realign` es para transcripciones viejas).
 2. **Renderizado de Video en la Nube vs Local**:
-   - En la Mac local (Apple M4), FFmpeg renderiza el video en 4 segundos usando aceleración por hardware Metal/VideoToolbox.
-   - En Render (0.1 vCPU), el renderizado es por software puro libx264. Asegurarse de mantener los hilos bajos y los presets rápidos.
+   - En la Mac un clip de ~10s se renderiza en 5–15s. En Render (0.1 vCPU, libx264 por software) tarda minutos; por eso el render es un job con progreso.
+   - Memoria: cualquier cambio en `video_engine.py` hay que medirlo (`/usr/bin/time -l ffmpeg ...` en la Mac o `docker run --memory=512m`). El techo real es ~512 MB **incluyendo** Python.
+   - Los videos en `outputs/` se pierden cuando Render reinicia el contenedor: la UI avisa que hay que descargarlos.
 3. **Comandos para Correr en Local**:
    ```bash
    cd /Users/lolescaldaferro/Antigravity/TikTokBible

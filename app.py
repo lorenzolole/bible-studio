@@ -1,5 +1,6 @@
 import math
 import os
+import re
 import shutil
 import time
 import uuid
@@ -47,21 +48,31 @@ app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 app.mount("/thumbnails", StaticFiles(directory=THUMBS_DIR), name="thumbnails")
 app.mount("/outputs", StaticFiles(directory=OUTPUTS_DIR), name="outputs")
 
-SESSION_TRANSCRIPTION_CACHE = {}
-
 # Latest /api/transcribe request per browser tab: queued Whisper work for a clip
 # the user already moved away from is skipped instead of run.
 LATEST_CLIP_REQUEST = {}
 
-# Clips that need Whisper run as background jobs the browser polls for progress
+# Whisper transcriptions and video renders run as background jobs the browser polls:
+# a render takes minutes on Render's shared CPU, too long to hold a request open.
 TRANSCRIBE_JOBS = {}
 JOBS_BY_CLIP = {}
+RENDER_JOBS = {}
 JOBS_LOCK = threading.Lock()
-JOB_TTL_SEC = 600
+JOB_TTL_SEC = 1800
 FINISHED_STAGES = ("done", "error", "superseded")
 
-# Endpoints run in FastAPI's threadpool; two concurrent 1080x1920 renders would exceed 512 MB.
-RENDER_LOCK = threading.Lock()
+# One heavy job at a time: a render and a Whisper run together would exceed 512 MB.
+# It is the same re-entrant lock Whisper uses, so a render can still transcribe its own clip.
+RENDER_LOCK = subtitles.WHISPER_LOCK
+MAX_RENDER_SEC = 600
+
+# Render temp files and uploads older than these are deleted before each render
+# (Render's disk is small and wiped on restart anyway).
+CACHE_TEMP_PREFIXES = ("img_loop_", "slideshow_", "mix_", "voice_", "sub_", "transcribe_voice_", "whisper_")
+CACHE_TEMP_MAX_AGE_SEC = 6 * 3600
+UPLOAD_MAX_AGE_SEC = 24 * 3600
+VISUAL_UPLOAD_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov")
+MUSIC_UPLOAD_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac")
 
 class TranscribeRequest(BaseModel):
     book: str
@@ -167,64 +178,15 @@ def get_chapter_transcription(book: str, chapter: int):
         logger.error(f"Error getting chapter transcription: {e}")
         return {"success": False, "phrases": [], "error": str(e)}
 
-def clip_cache_key(osis: str, chapter: int, start_sec: float, end_sec: float) -> str:
-    return f"{osis}_{chapter}_{start_sec:.1f}_{end_sec:.1f}"
-
-def get_clip_phrases(book_info: dict, book: str, chapter: int, start_sec: float, end_sec: float,
-                     should_abort=None, on_progress=None) -> tuple[list, str]:
-    """Timed phrases for a clip, relative to its start. Returns (phrases, source).
-    on_progress(dict) receives stage updates for the background job view."""
-    osis = book_info["osis"]
-    raw_audio = os.path.join(CACHE_DIR, "audio", f"{osis}_{chapter}.mp3")
-    report = on_progress or (lambda update: None)
-
-    def ensure_audio():
-        if not os.path.exists(raw_audio):
-            report({"stage": "download"})
-        downloader.download_audio_chapter(book, chapter)
-
-    # 1. Slice the chapter transcript (baked, or generated now where whole-chapter Whisper is fast)
-    words = transcripts.load_words(osis, chapter)
-    if words is None and transcripts.CHAPTER_WHISPER:
-        ensure_audio()
-        words = transcripts.transcribe_chapter(osis, chapter, raw_audio, on_progress=on_progress)
-    if words:
-        return transcripts.clip_phrases(words, start_sec, end_sec), "chapter"
-
-    cache_key = clip_cache_key(osis, chapter, start_sec, end_sec)
-    if cache_key in SESSION_TRANSCRIPTION_CACHE:
-        return SESSION_TRANSCRIPTION_CACHE[cache_key], "session"
-
-    # 2. Whisper just this clip
-    ensure_audio()
-    report({"stage": "trim"})
-    temp_voice = os.path.join(CACHE_DIR, f"transcribe_voice_{uuid.uuid4().hex}.mp3")
-    try:
-        audio_engine.trim_speech_audio(raw_audio, temp_voice, start_sec, end_sec, enhance_voice=False)
-        clip_words = subtitles.transcribe_words(temp_voice, should_abort=should_abort, on_progress=on_progress)
-    finally:
-        if os.path.exists(temp_voice):
-            os.remove(temp_voice)
-
-    if clip_words is None:
-        return [], "superseded"
-    clip_duration = max(1.0, end_sec - start_sec)
-    phrases = subtitles.words_to_phrases(clip_words, max_chars=26, clip_end=clip_duration)
-    if phrases:
-        SESSION_TRANSCRIPTION_CACHE[cache_key] = phrases
-        return phrases, "whisper"
-
-    # 3. No Whisper available: spread the official text proportionally over the clip
-    full_txt = downloader.fetch_passage_text(book, chapter).get("text", "")
-    if not full_txt:
-        return [], "none"
-    total_duration = audio_engine.get_audio_duration(raw_audio) or max(end_sec, 1.0)
-    ratio = max(0.0, min(1.0, start_sec / max(1.0, total_duration)))
-    text_words = full_txt.split()
-    start_idx = int(ratio * len(text_words))
-    num_words = max(8, int(clip_duration * 2.8))
-    txt = " ".join(text_words[start_idx:start_idx + num_words])
-    return subtitles.generate_timed_subtitles(txt, clip_duration), "estimate"
+def prune_finished_jobs():
+    """Forget jobs that finished more than JOB_TTL_SEC ago. Call with JOBS_LOCK held."""
+    now = time.time()
+    for jobs in (TRANSCRIBE_JOBS, RENDER_JOBS):
+        for job_id, job in list(jobs.items()):
+            if job.get("finished_at") and now - job["finished_at"] > JOB_TTL_SEC:
+                jobs.pop(job_id, None)
+                if JOBS_BY_CLIP.get(job.get("clip")) is job:
+                    JOBS_BY_CLIP.pop(job["clip"], None)
 
 def job_view(job: dict) -> dict:
     """Progress snapshot of a transcription job. Whisper progress blends whisper-cli's own
@@ -256,10 +218,10 @@ def job_view(job: dict) -> dict:
         view.update(success=False, superseded=True)
     return view
 
-def run_transcribe_job(job: dict, book_info: dict, req: TranscribeRequest):
+def run_transcribe_job(job: dict, osis: str, req: TranscribeRequest):
     try:
-        phrases, source = get_clip_phrases(book_info, req.book, req.chapter, req.start_sec, req.end_sec,
-                                           should_abort=job["should_abort"], on_progress=job.update)
+        phrases, source = transcripts.get_clip_phrases(osis, req.chapter, req.start_sec, req.end_sec,
+                                                       should_abort=job["should_abort"], on_progress=job.update)
         job.update(stage="superseded" if source == "superseded" else "done", phrases=phrases, source=source)
     except Exception as e:
         logger.error(f"Transcription job failed: {e}", exc_info=True)
@@ -280,19 +242,13 @@ def transcribe_audio_segment(req: TranscribeRequest):
         if words:
             phrases = transcripts.clip_phrases(words, req.start_sec, req.end_sec)
             return {"success": True, "phrases": phrases, "source": "chapter", "cached": True}
-        cache_key = clip_cache_key(osis, req.chapter, req.start_sec, req.end_sec)
-        if cache_key in SESSION_TRANSCRIPTION_CACHE:
-            return {"success": True, "phrases": SESSION_TRANSCRIPTION_CACHE[cache_key], "source": "session", "cached": True}
+        cache_key = transcripts.clip_cache_key(osis, req.chapter, req.start_sec, req.end_sec)
+        if cache_key in transcripts.SESSION_CLIP_CACHE:
+            return {"success": True, "phrases": transcripts.SESSION_CLIP_CACHE[cache_key], "source": "session", "cached": True}
 
         # Everything else runs as a background job the browser polls via /api/transcribe_status
         with JOBS_LOCK:
-            now = time.time()
-            for job_id, old in list(TRANSCRIBE_JOBS.items()):
-                if old.get("finished_at") and now - old["finished_at"] > JOB_TTL_SEC:
-                    TRANSCRIBE_JOBS.pop(job_id, None)
-                    if JOBS_BY_CLIP.get(old["clip"]) is old:
-                        JOBS_BY_CLIP.pop(old["clip"], None)
-
+            prune_finished_jobs()
             job = JOBS_BY_CLIP.get(cache_key)
             if job and job["stage"] in FINISHED_STAGES and job["stage"] != "done":
                 job = None  # retry clips that failed or were skipped
@@ -304,7 +260,7 @@ def transcribe_audio_segment(req: TranscribeRequest):
                 job["should_abort"] = (lambda: LATEST_CLIP_REQUEST.get(client_id) is not token) if client_id else None
                 TRANSCRIBE_JOBS[job["id"]] = job
                 JOBS_BY_CLIP[cache_key] = job
-                threading.Thread(target=run_transcribe_job, args=(job, book_info, req), daemon=True).start()
+                threading.Thread(target=run_transcribe_job, args=(job, osis, req), daemon=True).start()
             if req.client_id:
                 LATEST_CLIP_REQUEST[req.client_id] = job["token"]
 
@@ -560,13 +516,20 @@ async def get_presets():
             
     return {"visuals": visuals, "collections": collections, "music": music}
 
+def safe_upload_name(prefix: str, original: Optional[str], allowed_extensions: tuple) -> str:
+    """Filesystem-safe upload name, rejecting file types the renderer can't use."""
+    base = re.sub(r"[^\w.\-]", "_", os.path.basename(original or "archivo"))[-80:]
+    if not base.lower().endswith(allowed_extensions):
+        raise HTTPException(status_code=400, detail=f"Formato no soportado. Usá: {', '.join(allowed_extensions)}")
+    return f"{prefix}_{int(time.time())}_{base}"
+
 @app.post("/api/upload_visual")
-async def upload_visual(file: UploadFile = File(...)):
-    filename = f"upload_{int(time.time())}_{file.filename}"
+def upload_visual(file: UploadFile = File(...)):
+    filename = safe_upload_name("upload", file.filename, VISUAL_UPLOAD_EXTENSIONS)
     save_path = os.path.join(UPLOADS_DIR, filename)
     with open(save_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-        
+
     return {
         "success": True,
         "path": save_path,
@@ -576,12 +539,12 @@ async def upload_visual(file: UploadFile = File(...)):
     }
 
 @app.post("/api/upload_music")
-async def upload_music(file: UploadFile = File(...)):
-    filename = f"upload_music_{int(time.time())}_{file.filename}"
+def upload_music(file: UploadFile = File(...)):
+    filename = safe_upload_name("upload_music", file.filename, MUSIC_UPLOAD_EXTENSIONS)
     save_path = os.path.join(UPLOADS_DIR, filename)
     with open(save_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-        
+
     return {
         "success": True,
         "path": save_path,
@@ -589,122 +552,213 @@ async def upload_music(file: UploadFile = File(...)):
         "name": file.filename
     }
 
-@app.post("/api/render")
-def render_video(req: RenderRequest):
-    with RENDER_LOCK:
-        return _render_video(req)
+def resolve_media_path(path: str, label: str) -> str:
+    """Absolute path of a visual or music file, limited to the bundled assets and user uploads."""
+    full = os.path.realpath(path if os.path.isabs(path) else os.path.join(BASE_DIR, path))
+    for root in (ASSETS_DIR, UPLOADS_DIR):
+        if full.startswith(os.path.realpath(root) + os.sep) and os.path.isfile(full):
+            return full
+    raise HTTPException(status_code=400, detail=f"{label} no disponible: {os.path.basename(path)}. Volvé a elegirlo o subirlo.")
 
-def _render_video(req: RenderRequest):
+def clean_phrases(phrases: Optional[List[dict]]) -> list[dict]:
+    """Phrases sent by the browser, keeping only well-formed entries."""
+    cleaned = []
+    for p in phrases or []:
+        try:
+            start, end = float(p["start"]), float(p["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        text = str(p.get("text", "")).strip()
+        if text and end > start:
+            cleaned.append({"start": start, "end": end, "text": text})
+    return cleaned
+
+def prune_cache():
+    """Delete stale render/transcription temp files and old uploads."""
+    now = time.time()
+    targets = ((CACHE_DIR, CACHE_TEMP_PREFIXES, CACHE_TEMP_MAX_AGE_SEC),
+               (UPLOADS_DIR, ("upload_",), UPLOAD_MAX_AGE_SEC))
+    for directory, prefixes, max_age in targets:
+        for name in os.listdir(directory):
+            path = os.path.join(directory, name)
+            try:
+                if name.startswith(prefixes) and os.path.isfile(path) and now - os.path.getmtime(path) > max_age:
+                    os.remove(path)
+            except OSError:
+                pass
+
+def render_job_view(job: dict) -> dict:
+    """Progress snapshot of a render job; FFmpeg stages report real frame-based percentages."""
+    stage = job["stage"]
+    view = {"job_id": job["id"], "stage": stage, "done": stage in FINISHED_STAGES}
+    bands = {"queue": (0, 0), "subtitles": (3, 3), "audio": (6, 6), "visual": (10, 35), "encode": (35, 97), "thumbnail": (98, 98)}
+    if stage in bands:
+        low, high = bands[stage]
+        percent = job.get("percent", 0)
+        view["progress"] = round(low + (high - low) * percent / 100)
+        if stage == "encode" and percent >= 3:
+            elapsed = time.time() - job.get("stage_started_at", time.time())
+            view["eta_sec"] = round(elapsed * (100 - percent) / percent)
+    else:
+        view["progress"] = 100
+    if stage == "done":
+        view.update(success=True, **job["result"])
+    elif stage == "error":
+        view.update(success=False, error=job.get("error"))
+    return view
+
+def run_render_job(job: dict, book_info: dict, req: RenderRequest, visual, music: Optional[str]):
+    temp_files = []
+
+    def on_progress(update: dict):
+        if update.get("stage") and update["stage"] != job["stage"]:
+            job["stage_started_at"] = time.time()
+            job["percent"] = 0
+        job.update(update)
+
     try:
-        book_info = downloader.resolve_book(req.book)
-        if not book_info:
-            raise HTTPException(status_code=400, detail="Invalid book")
-            
-        osis = book_info["osis"]
-        book_name_clean = book_info["name_es"].replace(" ", "_").replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ú","u")
-        raw_audio = os.path.join(CACHE_DIR, "audio", f"{osis}_{req.chapter}.mp3")
-        if not os.path.exists(raw_audio):
-            downloader.download_audio_chapter(req.book, req.chapter)
-            
-        timestamp = int(time.time())
-        clip_duration = req.end_sec - req.start_sec
-        trimmed_voice = os.path.join(CACHE_DIR, f"voice_{osis}_{req.chapter}_{timestamp}.mp3")
-        audio_engine.trim_speech_audio(
-            raw_audio,
-            trimmed_voice,
-            start_sec=req.start_sec,
-            end_sec=req.end_sec,
-            enhance_voice=True
-        )
-
-        english_citation = downloader.normalize_citation_english(req.citation)
-
-        ass_path = None
-        timed_phrases = None
-        if req.enable_subtitles and req.subtitle_style != "none":
-            if req.phrases and len(req.phrases) > 0:
-                timed_phrases = req.phrases
-            elif req.custom_text:
-                timed_phrases = subtitles.generate_timed_subtitles(req.custom_text, clip_duration)
-            else:
-                timed_phrases, _ = get_clip_phrases(book_info, req.book, req.chapter, req.start_sec, req.end_sec)
-
-            ass_path = os.path.join(CACHE_DIR, f"sub_{osis}_{req.chapter}_{timestamp}.ass")
-            subtitles.create_ass_subtitles(
-                timed_phrases=timed_phrases,
-                output_ass_path=ass_path,
-                style_name=req.subtitle_style,
-                citation=english_citation,
-                citation_duration=clip_duration,
-                position=req.subtitle_position,
-                text_case=req.text_case,
-                watermark=req.watermark or ""
-            )
-        elif req.citation or req.watermark:
-            # Subtitles disabled, but user provided citation or watermark
-            ass_path = os.path.join(CACHE_DIR, f"sub_cit_{osis}_{req.chapter}_{timestamp}.ass")
-            subtitles.create_ass_subtitles(
-                timed_phrases=[],
-                output_ass_path=ass_path,
-                style_name="classicserif",
-                citation=english_citation,
-                citation_duration=clip_duration,
-                position=req.subtitle_position,
-                text_case=req.text_case,
-                watermark=req.watermark or ""
-            )
-        
-        if isinstance(req.visual_paths, list):
-            resolved_vis = [p if os.path.isabs(p) else os.path.join(BASE_DIR, p) for p in req.visual_paths]
-        else:
-            resolved_vis = req.visual_paths if os.path.isabs(req.visual_paths) else os.path.join(BASE_DIR, req.visual_paths)
-
-        mus_path = req.music_path
-        if mus_path and not os.path.isabs(mus_path):
-            mus_path = os.path.join(BASE_DIR, mus_path)
-            
-        # Human-readable filename
-        out_filename = f"{book_name_clean}_{req.chapter}_{int(clip_duration)}s_{time.strftime('%H%M%S')}.mp4"
-        out_path = os.path.join(OUTPUTS_DIR, out_filename)
-        
-        video_engine.render_tiktok_video(
-            voice_audio=trimmed_voice,
-            visual_path=resolved_vis,
-            music_audio=mus_path if mus_path and os.path.exists(mus_path) else None,
-            subtitle_ass=ass_path,
-            output_path=out_path,
-            music_volume=req.music_volume,
-            corner_radius=req.corner_radius,
-            slideshow_pacing=req.slideshow_pacing,
-            framing_mode=req.framing_mode,
-            whisper_phrases=timed_phrases if timed_phrases else None,
-            enable_particles=req.enable_particles,
-            enable_light_leak=req.enable_light_leak,
-            enable_dynamic_motion=req.enable_dynamic_motion,
-            enable_film_grain=req.enable_film_grain
-        )
-
-        # Generate thumbnail for library
-        thumb_filename = os.path.splitext(out_filename)[0] + ".jpg"
-        thumb_path = os.path.join(OUTPUTS_THUMBS, thumb_filename)
-        subprocess.run([
-            "ffmpeg", "-y", "-ss", f"{min(2.0, clip_duration / 2):.1f}", "-i", out_path,
-            "-vframes", "1",
-            "-vf", "scale=160:284:force_original_aspect_ratio=increase,crop=160:284",
-            thumb_path
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
-        return {
-            "success": True,
-            "filename": out_filename,
-            "video_url": f"/outputs/{out_filename}",
-            "thumb_url": f"/outputs/thumbnails/{thumb_filename}",
-            "duration": clip_duration,
-            "title": f"{book_info['name_es']} {req.chapter}"
-        }
+        with RENDER_LOCK:
+            prune_cache()
+            on_progress({"stage": "subtitles"})
+            result = render_clip(book_info, req, visual, music, on_progress, temp_files)
+        job.update(stage="done", result=result)
     except Exception as e:
         logger.error(f"Render failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        job.update(stage="error", error=str(e))
+    finally:
+        for path in temp_files:
+            if path and os.path.exists(path):
+                os.remove(path)
+        job["finished_at"] = time.time()
+
+@app.post("/api/render")
+def render_video(req: RenderRequest):
+    """Validate the request and start a background render; poll /api/render_status for progress."""
+    book_info = downloader.resolve_book(req.book)
+    if not book_info:
+        raise HTTPException(status_code=400, detail="Libro inválido")
+    clip_duration = req.end_sec - req.start_sec
+    if req.start_sec < 0 or clip_duration < 1.0:
+        raise HTTPException(status_code=400, detail="El fragmento tiene que durar al menos 1 segundo")
+    if clip_duration > MAX_RENDER_SEC:
+        raise HTTPException(status_code=400, detail=f"El fragmento no puede superar {MAX_RENDER_SEC // 60} minutos")
+    paths = req.visual_paths if isinstance(req.visual_paths, list) else [req.visual_paths]
+    if not paths or not all(paths):
+        raise HTTPException(status_code=400, detail="Elegí un fondo visual o una colección")
+    visuals = [resolve_media_path(p, "Fondo visual") for p in paths]
+    music = resolve_media_path(req.music_path, "Música") if req.music_path else None
+
+    job = {"id": uuid.uuid4().hex, "stage": "queue"}
+    with JOBS_LOCK:
+        prune_finished_jobs()
+        RENDER_JOBS[job["id"]] = job
+    visual = visuals if isinstance(req.visual_paths, list) else visuals[0]
+    threading.Thread(target=run_render_job, args=(job, book_info, req, visual, music), daemon=True).start()
+    return {"success": True, "pending": True, **render_job_view(job)}
+
+@app.get("/api/render_status")
+def render_status(job_id: str):
+    job = RENDER_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Render no encontrado: el servidor se reinició. Probá de nuevo.")
+    return render_job_view(job)
+
+def render_clip(book_info: dict, req: RenderRequest, visual, music: Optional[str], on_progress, temp_files: list) -> dict:
+    """Trim the narration, build subtitles and render the video. Returns the library entry."""
+    osis = book_info["osis"]
+    book_name_clean = book_info["name_es"].replace(" ", "_").replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ú","u")
+    audio_info = downloader.download_audio_chapter(osis, req.chapter)
+
+    stamp = uuid.uuid4().hex[:8]
+    clip_duration = req.end_sec - req.start_sec
+    trimmed_voice = os.path.join(CACHE_DIR, f"voice_{osis}_{req.chapter}_{stamp}.mp3")
+    temp_files.append(trimmed_voice)
+    audio_engine.trim_speech_audio(
+        audio_info["local_path"],
+        trimmed_voice,
+        start_sec=req.start_sec,
+        end_sec=req.end_sec,
+        enhance_voice=True
+    )
+
+    english_citation = downloader.normalize_citation_english(req.citation)
+
+    ass_path = None
+    timed_phrases = None
+    if req.enable_subtitles and req.subtitle_style != "none":
+        timed_phrases = clean_phrases(req.phrases)
+        if not timed_phrases and req.custom_text:
+            timed_phrases = subtitles.generate_timed_subtitles(req.custom_text, clip_duration)
+        elif not timed_phrases:
+            timed_phrases, _ = transcripts.get_clip_phrases(osis, req.chapter, req.start_sec, req.end_sec)
+
+        ass_path = os.path.join(CACHE_DIR, f"sub_{osis}_{req.chapter}_{stamp}.ass")
+        temp_files.append(ass_path)
+        subtitles.create_ass_subtitles(
+            timed_phrases=timed_phrases,
+            output_ass_path=ass_path,
+            style_name=req.subtitle_style,
+            citation=english_citation,
+            citation_duration=clip_duration,
+            position=req.subtitle_position,
+            text_case=req.text_case,
+            watermark=req.watermark or ""
+        )
+    elif req.citation or req.watermark:
+        # Subtitles disabled, but user provided citation or watermark
+        ass_path = os.path.join(CACHE_DIR, f"sub_cit_{osis}_{req.chapter}_{stamp}.ass")
+        temp_files.append(ass_path)
+        subtitles.create_ass_subtitles(
+            timed_phrases=[],
+            output_ass_path=ass_path,
+            style_name="classicserif",
+            citation=english_citation,
+            citation_duration=clip_duration,
+            position=req.subtitle_position,
+            text_case=req.text_case,
+            watermark=req.watermark or ""
+        )
+
+    # Human-readable filename
+    out_filename = f"{book_name_clean}_{req.chapter}_{int(clip_duration)}s_{time.strftime('%H%M%S')}.mp4"
+    out_path = os.path.join(OUTPUTS_DIR, out_filename)
+
+    video_engine.render_tiktok_video(
+        voice_audio=trimmed_voice,
+        visual_path=visual,
+        music_audio=music,
+        subtitle_ass=ass_path,
+        output_path=out_path,
+        music_volume=req.music_volume,
+        corner_radius=req.corner_radius,
+        slideshow_pacing=req.slideshow_pacing,
+        framing_mode=req.framing_mode,
+        whisper_phrases=timed_phrases if timed_phrases else None,
+        enable_particles=req.enable_particles,
+        enable_light_leak=req.enable_light_leak,
+        enable_dynamic_motion=req.enable_dynamic_motion,
+        enable_film_grain=req.enable_film_grain,
+        on_progress=on_progress
+    )
+
+    # Generate thumbnail for library
+    on_progress({"stage": "thumbnail"})
+    thumb_filename = os.path.splitext(out_filename)[0] + ".jpg"
+    thumb_path = os.path.join(OUTPUTS_THUMBS, thumb_filename)
+    subprocess.run([
+        "ffmpeg", "-y", "-ss", f"{min(2.0, clip_duration / 2):.1f}", "-i", out_path,
+        "-vframes", "1",
+        "-vf", "scale=160:284:force_original_aspect_ratio=increase,crop=160:284",
+        thumb_path
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    return {
+        "filename": out_filename,
+        "video_url": f"/outputs/{out_filename}",
+        "thumb_url": f"/outputs/thumbnails/{thumb_filename}",
+        "duration": clip_duration,
+        "title": f"{book_info['name_es']} {req.chapter}"
+    }
 
 def get_video_duration_fast(fpath):
     try:

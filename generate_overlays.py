@@ -20,7 +20,8 @@ def generate_celestial_particles(
 ) -> str:
     """
     Generate a seamless, dignified loop of floating golden-white celestial dust particles
-    with soft bokeh depth and alpha transparency (Apple QuickTime Animation ARGB).
+    with soft bokeh depth and alpha transparency (lossless FFV1 yuva420p: half the decoded
+    size of ARGB, which matters inside the 512 MB render container).
     """
     if os.path.exists(output_path):
         return output_path
@@ -68,7 +69,7 @@ def generate_celestial_particles(
 
     cmd = [
         "ffmpeg", "-y", "-framerate", str(fps), "-i", f"{temp_frames_dir}/frame_%04d.png",
-        "-c:v", "qtrle", "-pix_fmt", "argb", output_path
+        "-c:v", "ffv1", "-pix_fmt", "yuva420p", output_path
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -138,7 +139,7 @@ def generate_warm_light_leak(
 
     cmd = [
         "ffmpeg", "-y", "-framerate", str(fps), "-i", f"{temp_frames_dir}/frame_%04d.png",
-        "-c:v", "qtrle", "-pix_fmt", "argb", output_path
+        "-c:v", "ffv1", "-pix_fmt", "yuva420p", output_path
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -151,8 +152,8 @@ def generate_warm_light_leak(
 
 def ensure_overlays() -> tuple[str, str]:
     """Ensure both cinematic overlays exist and return their paths."""
-    particles_path = os.path.join(OVERLAYS_DIR, "particles_celestial.mov")
-    light_leak_path = os.path.join(OVERLAYS_DIR, "light_leak_warm.mov")
+    particles_path = os.path.join(OVERLAYS_DIR, "particles_celestial.mkv")
+    light_leak_path = os.path.join(OVERLAYS_DIR, "light_leak_warm.mkv")
 
     generate_celestial_particles(particles_path)
     generate_warm_light_leak(light_leak_path)

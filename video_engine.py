@@ -3,6 +3,7 @@ import subprocess
 import json
 import logging
 import math
+import tempfile
 from PIL import Image, ImageDraw
 import audio_engine
 import generate_overlays
@@ -19,6 +20,44 @@ OVERLAYS_DIR = os.path.join(ASSETS_DIR, "overlays")
 os.makedirs(OUTPUTS_DIR, exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(OVERLAYS_DIR, exist_ok=True)
+
+FPS = 30
+FFMPEG_THREADS = os.environ.get("FFMPEG_THREADS", "2")
+FFMPEG_PRESET = os.environ.get("FFMPEG_PRESET", "veryfast")
+
+# FFmpeg sizes decoder, filter and encoder thread pools by the host's core count, and each
+# thread holds 1080x1920 frame buffers: ~1 GB peak, an OOM kill in a 512 MB container.
+# Every FFmpeg call caps filters here, decoders with "-threads 1" per input and the encoder
+# with FFMPEG_THREADS.
+THREAD_CAPS = ["-filter_threads", "1", "-filter_complex_threads", "1"]
+
+def _filter_path(path: str) -> str:
+    """Quote a file path for use as a filter option inside -filter_complex."""
+    return "'" + path.replace("\\", "/").replace(":", "\\:") + "'"
+
+def _run_ffmpeg(args: list[str], total_frames: int = 0, on_progress=None, stage: str = "encode"):
+    """Run `ffmpeg <args>`, reporting {"stage", "percent"} parsed from -progress output.
+    Raises RuntimeError (with the stderr tail logged) on failure."""
+    cmd = ["ffmpeg", "-nostats", "-progress", "pipe:1"] + args
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as err:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err, text=True)
+        last_percent = -1
+        for line in proc.stdout:
+            if not (on_progress and total_frames and line.startswith("frame=")):
+                continue
+            try:
+                percent = min(99, int(100 * int(line.split("=", 1)[1]) / total_frames))
+            except ValueError:
+                continue
+            if percent != last_percent:
+                on_progress({"stage": stage, "percent": percent})
+                last_percent = percent
+        code = proc.wait()
+        if code != 0:
+            err.seek(0)
+            logger.error(f"FFmpeg failed ({code}) during {stage}: {err.read()[-1500:]}")
+            reason = "killed, likely out of memory" if code in (-9, 137) else f"exit code {code}"
+            raise RuntimeError(f"FFmpeg failed during {stage} ({reason})")
 
 def get_media_dimensions(file_path: str) -> tuple[int, int]:
     """Get width and height of an image or video file using ffprobe."""
@@ -107,23 +146,23 @@ def prepare_visual_input(
     duration: float = 10.0,
     framing: str = "pitch_black",
     whisper_phrases: list[dict] = None,
-    enable_dynamic_motion: bool = True
+    enable_dynamic_motion: bool = True,
+    on_progress=None
 ) -> tuple[str, bool]:
     """Ensure visual is in video format with organic camera motion and Whisper-reactive zoom."""
     ext = os.path.splitext(visual_path)[1].lower()
     if ext in [".jpg", ".jpeg", ".png", ".webp"]:
-        cache_signature = f"{visual_path}_{framing}_{round(duration, 1)}_{enable_dynamic_motion}_{len(whisper_phrases or [])}"
+        cache_signature = f"v2_{visual_path}_{framing}_{round(duration, 1)}_{enable_dynamic_motion}_{len(whisper_phrases or [])}"
         loop_out = os.path.join(temp_dir, f"img_loop_{abs(hash(cache_signature)) % 1000000}.mp4")
 
         if not os.path.exists(loop_out):
             logger.info(f"Preparing cinematic visual {visual_path} (framing={framing}, motion={enable_dynamic_motion})...")
             w, h = get_media_dimensions(visual_path)
-            num_frames = int(duration * 30) + 30
-            fps = 30
+            num_frames = int(duration * FPS) + FPS
 
             zoom_expr, x_expr, y_expr = build_camera_motion_expression(
                 total_frames=num_frames,
-                fps=fps,
+                fps=FPS,
                 whisper_phrases=whisper_phrases,
                 enable_dynamic_motion=enable_dynamic_motion
             )
@@ -135,22 +174,26 @@ def prepare_visual_input(
                     "eq=contrast=1.05:brightness=-0.02"
                 )
             else:
+                # Zoom straight to the composited size, from a source capped at 2x that size: enough
+                # oversampling for a jitter-free push-in without decoding 24 MP frames (sunset_mountains.jpg)
+                fg_w, fg_h = calculate_foreground_size(w, h)
+                src_w, src_h = (2 * fg_w, 2 * fg_h) if w > 2 * fg_w else (w, h)
                 vf_expr = (
-                    f"scale={w}:{h},"
-                    f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':d={num_frames}:s={w}x{h}:fps=30,"
+                    f"scale={src_w}:{src_h},"
+                    f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':d={num_frames}:s={fg_w}x{fg_h}:fps=30,"
                     "eq=contrast=1.05:brightness=-0.01"
                 )
 
-            cmd = [
-                "ffmpeg", "-y", "-loop", "1", "-i", visual_path,
-                "-vf", vf_expr,
-                "-t", f"{duration:.2f}",
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-pix_fmt", "yuv420p",
-                loop_out
-            ]
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Write to a temp name so a failed or killed encode never leaves a broken cached loop
+            # A single decoded frame is enough: zoompan emits d frames per input frame
+            partial_out = f"{loop_out}.part.mp4"
+            _run_ffmpeg(
+                ["-y"] + THREAD_CAPS + ["-threads", "1", "-i", visual_path,
+                 "-vf", vf_expr, "-t", f"{duration:.2f}",
+                 "-c:v", "libx264", "-preset", "fast", "-threads", FFMPEG_THREADS,
+                 "-pix_fmt", "yuv420p", partial_out],
+                total_frames=int(duration * FPS), on_progress=on_progress, stage="visual")
+            os.replace(partial_out, loop_out)
         return loop_out, True
     else:
         return visual_path, False
@@ -162,7 +205,8 @@ def build_slideshow_video(
     pacing: str = "cinematic",
     framing: str = "pitch_black",
     whisper_phrases: list[dict] = None,
-    enable_dynamic_motion: bool = True
+    enable_dynamic_motion: bool = True,
+    on_progress=None
 ) -> str:
     """
     Build a slideshow video with organic crossfades and dignified Ken Burns motions.
@@ -174,7 +218,8 @@ def build_slideshow_video(
             duration=target_duration,
             framing=framing,
             whisper_phrases=whisper_phrases,
-            enable_dynamic_motion=enable_dynamic_motion
+            enable_dynamic_motion=enable_dynamic_motion,
+            on_progress=on_progress
         )
         return v
 
@@ -199,7 +244,8 @@ def build_slideshow_video(
     filter_chains = []
 
     for i, p in enumerate(expanded_paths):
-        inputs.extend(["-loop", "1", "-t", f"{slide_dur:.2f}", "-i", p])
+        # One frame per image: zoompan emits num_frames frames per input frame
+        inputs.extend(["-threads", "1", "-i", p])
         pattern = i % 2
         if pattern == 0:
             zoom_expr = f"1.0 + 0.04*on/{num_frames}"
@@ -227,20 +273,18 @@ def build_slideshow_video(
 
     filter_complex = "".join(filter_chains).rstrip(";")
 
-    threads = os.environ.get("FFMPEG_THREADS", "2")
-    preset = os.environ.get("FFMPEG_PRESET", "veryfast")
-
-    cmd = ["ffmpeg", "-y", "-threads", threads] + inputs + [
+    args = ["-y"] + THREAD_CAPS + inputs + [
         "-filter_complex", filter_complex,
         "-map", "[vfinal]",
         "-t", f"{target_duration:.2f}",
         "-c:v", "libx264",
-        "-preset", preset,
+        "-preset", FFMPEG_PRESET,
+        "-threads", FFMPEG_THREADS,
         "-pix_fmt", "yuv420p",
         output_path
     ]
     logger.info(f"Rendering dignified {pacing} slideshow ({n} cuts, {target_duration:.1f}s, {fade_time:.2f}s crossfade)...")
-    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _run_ffmpeg(args, total_frames=int(target_duration * FPS), on_progress=on_progress, stage="visual")
     return output_path
 
 def render_tiktok_video(
@@ -258,7 +302,8 @@ def render_tiktok_video(
     enable_particles: bool = True,
     enable_light_leak: bool = True,
     enable_dynamic_motion: bool = True,
-    enable_film_grain: bool = True
+    enable_film_grain: bool = True,
+    on_progress=None
 ) -> str:
     """
     Render a complete 1080x1920 vertical TikTok video with cinematic atmosphere layers.
@@ -278,14 +323,16 @@ def render_tiktok_video(
     logger.info(f"Target video duration: {duration:.2f}s (framing={framing_mode})")
 
     # 0. Ensure cinematic overlay assets exist
-    particles_path = os.path.join(OVERLAYS_DIR, "particles_celestial.mov")
-    light_leak_path = os.path.join(OVERLAYS_DIR, "light_leak_warm.mov")
+    particles_path = os.path.join(OVERLAYS_DIR, "particles_celestial.mkv")
+    light_leak_path = os.path.join(OVERLAYS_DIR, "light_leak_warm.mkv")
     if enable_particles and not os.path.exists(particles_path):
         generate_overlays.generate_celestial_particles(particles_path)
     if enable_light_leak and not os.path.exists(light_leak_path):
         generate_overlays.generate_warm_light_leak(light_leak_path)
 
     # 1. Audio Mix (voice + optional music with ducking)
+    if on_progress:
+        on_progress({"stage": "audio"})
     if music_audio and os.path.exists(music_audio):
         mixed_audio = os.path.join(CACHE_DIR, f"mix_{abs(hash(voice_audio + music_audio)) % 1000000}.mp3")
         audio_engine.mix_voice_and_music(
@@ -311,78 +358,69 @@ def render_tiktok_video(
             pacing=slideshow_pacing,
             framing=framing_mode,
             whisper_phrases=whisper_phrases,
-            enable_dynamic_motion=enable_dynamic_motion
-        )
-    elif isinstance(visual_path, list):
-        video_input, _ = prepare_visual_input(
-            visual_path[0],
-            duration=duration,
-            framing=framing_mode,
-            whisper_phrases=whisper_phrases,
-            enable_dynamic_motion=enable_dynamic_motion
+            enable_dynamic_motion=enable_dynamic_motion,
+            on_progress=on_progress
         )
     else:
         video_input, _ = prepare_visual_input(
-            visual_path,
+            visual_path[0] if isinstance(visual_path, list) else visual_path,
             duration=duration,
             framing=framing_mode,
             whisper_phrases=whisper_phrases,
-            enable_dynamic_motion=enable_dynamic_motion
+            enable_dynamic_motion=enable_dynamic_motion,
+            on_progress=on_progress
         )
 
     orig_w, orig_h = get_media_dimensions(video_input)
     fg_w, fg_h = calculate_foreground_size(orig_w, orig_h)
     mask_path = generate_rounded_mask(fg_w, fg_h, radius=corner_radius)
 
-    # 3. Input streams indexing for FFmpeg
-    # 0: visual video_input
-    # 1: mask_path
-    # Next inputs depend on overlay flags
-    inputs = [
-        "-stream_loop", "-1", "-i", video_input,
-        "-loop", "1", "-i", mask_path
-    ]
+    # 3. Sources. Video comes from movie= filters inside the graph, which decode on demand;
+    # -i inputs are decoded eagerly and their 1080x1920 frames pile up waiting for the slower
+    # main chain (measured peak: 788 MB with -i inputs, 409 MB with movie= sources).
+    use_particles = enable_particles and os.path.exists(particles_path)
+    use_leak = enable_light_leak and os.path.exists(light_leak_path)
+    sources = [f"movie={_filter_path(video_input)}:loop=0,setpts=N/(FRAME_RATE*TB)[visual_src];"]
+    if framing_mode != "fullscreen":
+        sources.append(f"movie={_filter_path(mask_path)},loop=loop=-1:size=1,setpts=N/({FPS}*TB)[mask_src];")
+    if use_particles:
+        sources.append(f"movie={_filter_path(particles_path)}:loop=0,setpts=N/(FRAME_RATE*TB)[particles_src];")
+    if use_leak:
+        sources.append(f"movie={_filter_path(light_leak_path)},setpts=N/(FRAME_RATE*TB)[leak_src];")
 
-    particles_idx = None
-    if enable_particles and os.path.exists(particles_path):
-        particles_idx = len(inputs) // 4
-        inputs.extend(["-stream_loop", "-1", "-t", f"{duration:.2f}", "-i", particles_path])
-
-    leak_idx = None
-    if enable_light_leak and os.path.exists(light_leak_path):
-        leak_idx = len(inputs) // 4
-        inputs.extend(["-t", f"{duration:.2f}", "-i", light_leak_path])
-
-    audio_idx = len(inputs) // 4
-    inputs.extend(["-i", final_audio])
+    inputs = ["-threads", "1", "-i", final_audio]
+    audio_idx = 0
 
     # 4. Filtergraph Assembly
+    # Every source runs at FPS: color= and looped images default to 25 fps, and an overlay fed
+    # at mismatched rates queues unconsumed 1080x1920 frames (hundreds of MB over a clip).
     filter_parts = []
 
     if framing_mode == "fullscreen":
         # Fullscreen 9:16 bleed with subtle dark vignette at top and bottom for text contrast
         filter_parts.append(
-            "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,eq=contrast=1.04:brightness=-0.02[art];"
-            f"color=c=black@0.26:s=1080x360:d={duration:.2f}[top_shade];"
-            f"color=c=black@0.42:s=1080x420:d={duration:.2f}[bot_shade];"
+            f"[visual_src]fps={FPS},scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,eq=contrast=1.04:brightness=-0.02[art];"
+            f"color=c=black@0.26:s=1080x360:r={FPS}:d={duration:.2f}[top_shade];"
+            f"color=c=black@0.42:s=1080x420:r={FPS}:d={duration:.2f}[bot_shade];"
             "[art][top_shade]overlay=0:0[art_top];"
             "[art_top][bot_shade]overlay=0:H-h[comp_base];"
         )
     elif framing_mode == "ambient":
         # Deeply darkened and desaturated ambient background
         filter_parts.append(
-            "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=26:5,eq=brightness=-0.65:contrast=1.1:saturation=0.5[bg];"
-            f"[0:v]scale={fg_w}:{fg_h},eq=contrast=1.06:brightness=-0.01,format=yuva420p[fg];"
-            f"[1:v]scale={fg_w}:{fg_h}[mask_scaled];"
+            f"[visual_src]fps={FPS},split=2[src_bg][src_fg];"
+            "[src_bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=26:5,eq=brightness=-0.65:contrast=1.1:saturation=0.5[bg];"
+            f"[src_fg]scale={fg_w}:{fg_h},eq=contrast=1.06:brightness=-0.01,format=yuva420p[fg];"
+            f"[mask_src]scale={fg_w}:{fg_h}[mask_scaled];"
             "[fg][mask_scaled]alphamerge[fg_rounded];"
             f"[bg][fg_rounded]overlay=(W-w)/2:(H-h)/2{'+' if y_offset >= 0 else ''}{y_offset}:shortest=1[comp_base];"
         )
     else:
         # Default: Pure Pitch Black #000000 (Minimalist Viral Ref @nehzro)
         filter_parts.append(
-            f"color=c=black:s=1080x1920:d={duration:.2f}[bg];"
-            f"[0:v]scale={fg_w}:{fg_h},eq=contrast=1.06:brightness=-0.01,format=yuva420p[fg];"
-            f"[1:v]scale={fg_w}:{fg_h}[mask_scaled];"
+            f"color=c=black:s=1080x1920:r={FPS}:d={duration:.2f}[bg];"
+            f"[visual_src]fps={FPS},scale={fg_w}:{fg_h},eq=contrast=1.06:brightness=-0.01,format=yuva420p[fg];"
+            f"[mask_src]scale={fg_w}:{fg_h}[mask_scaled];"
             "[fg][mask_scaled]alphamerge[fg_rounded];"
             f"[bg][fg_rounded]overlay=(W-w)/2:(H-h)/2{'+' if y_offset >= 0 else ''}{y_offset}:shortest=1[comp_base];"
         )
@@ -390,13 +428,13 @@ def render_tiktok_video(
     current_layer = "[comp_base]"
 
     # Layer: Celestial Dust Particles (Overlay with native alpha)
-    if particles_idx is not None:
-        filter_parts.append(f"{current_layer}[{particles_idx}:v]overlay=0:0:format=auto[comp_particles];")
+    if use_particles:
+        filter_parts.append(f"[particles_src]fps={FPS}[particles];{current_layer}[particles]overlay=0:0:format=auto[comp_particles];")
         current_layer = "[comp_particles]"
 
     # Layer: Warm Anamorphic Light Leak Hook (0-2s)
-    if leak_idx is not None:
-        filter_parts.append(f"{current_layer}[{leak_idx}:v]overlay=0:0:format=auto:eof_action=pass[comp_leak];")
+    if use_leak:
+        filter_parts.append(f"[leak_src]fps={FPS}[leak];{current_layer}[leak]overlay=0:0:format=auto:eof_action=pass[comp_leak];")
         current_layer = "[comp_leak]"
 
     # Layer: 35mm Film Grain & Tone Curve
@@ -406,28 +444,22 @@ def render_tiktok_video(
 
     # Layer: Subtitles & Watermark Burn-in
     if subtitle_ass and os.path.exists(subtitle_ass):
-        safe_ass = subtitle_ass.replace("\\", "/").replace(":", "\\:")
-        filter_parts.append(f"{current_layer}subtitles='{safe_ass}'[final_v]")
+        filter_parts.append(f"{current_layer}subtitles={_filter_path(subtitle_ass)}[final_v]")
         final_v_label = "[final_v]"
     else:
         final_v_label = current_layer.rstrip(";")
 
-    filter_complex = "".join(filter_parts).rstrip(";")
+    filter_complex = "".join(sources + filter_parts).rstrip(";")
 
-    threads = os.environ.get("FFMPEG_THREADS", "2")
-    preset = os.environ.get("FFMPEG_PRESET", "veryfast")
-
-    cmd = [
-        "ffmpeg", "-y",
-        "-threads", threads
-    ] + inputs + [
+    args = ["-y"] + THREAD_CAPS + inputs + [
         "-filter_complex", filter_complex,
         "-map", final_v_label,
         "-map", f"{audio_idx}:a",
         "-t", f"{duration:.2f}",
         "-c:v", "libx264",
-        "-preset", preset,
+        "-preset", FFMPEG_PRESET,
         "-crf", "22",
+        "-threads", FFMPEG_THREADS,
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", "192k",
@@ -436,10 +468,11 @@ def render_tiktok_video(
     ]
 
     logger.info(f"Rendering TikTok video ({framing_mode}, particles={enable_particles}, leak={enable_light_leak}, motion={enable_dynamic_motion}) -> {output_path}...")
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    if res.returncode != 0:
-        logger.error(f"FFmpeg error: {res.stderr}")
-        raise RuntimeError(f"FFmpeg failed with return code {res.returncode}")
+    try:
+        _run_ffmpeg(args, total_frames=int(duration * FPS), on_progress=on_progress, stage="encode")
+    finally:
+        if final_audio != voice_audio and os.path.exists(final_audio):
+            os.remove(final_audio)
 
     logger.info(f"Render complete: {output_path}")
     return output_path

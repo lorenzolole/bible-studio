@@ -36,7 +36,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PORT=7860 \
     CHAPTER_WHISPER=0 \
-    WHISPER_SEC_PER_AUDIO_SEC=5
+    WHISPER_SEC_PER_AUDIO_SEC=5 \
+    FFMPEG_THREADS=1
 
 # Install runtime system packages (FFmpeg, fonts, certs, curl)
 RUN apt-get update && apt-get install -y --no-install-recommends \

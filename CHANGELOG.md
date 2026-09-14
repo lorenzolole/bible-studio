@@ -2,6 +2,33 @@
 
 Todos los cambios notables de este proyecto se documentarán en este archivo siguiendo el formato [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
+## [3.4.0] - 2026-09-14
+
+### Corregido
+- **Los videos no se podían generar en producción**: FFmpeg llegaba a ~826 MB de pico, el contenedor de 512 MB moría (OOM) y el navegador recibía un 502 a los ~108s. Ahora el pico medido es ~300–380 MB:
+  - Las fuentes de video (arte, máscara, overlays) entran por filtros `movie=`, que decodifican bajo demanda. Con entradas `-i` FFmpeg decodifica por adelantado y encola cuadros de 1080×1920 (788 → 409 MB).
+  - Overlays de partículas y fuga de luz en FFV1 `yuva420p` (`.mkv`) en vez de qtrle ARGB (`.mov`).
+  - Todas las fuentes a 30 fps (`color=` y las imágenes en loop venían a 25 fps y el `overlay` acumulaba cuadros).
+  - Límite de hilos en filtros, decoders y encoder (`FFMPEG_THREADS=1` en Docker).
+  - El zoom de la obra se calcula al tamaño final, desde una fuente de como mucho 2× ese tamaño (`sunset_mountains.jpg` es de 6016×4016).
+- **Subtítulos con las palabras exactas del texto oficial NIV-UK** (`text_alignment.py`): se conservan los tiempos de Whisper y se toman palabras, puntuación y mayúsculas del texto ("for knew" → "foreknew", "Curia Thaba" → "Kiriath Arba", "127" → "a hundred and twenty-seven"). Las 617 transcripciones horneadas quedaron realineadas y los clips no horneados se alinean en vivo.
+- **Botones virales recalibrados al versículo exacto**, buscando el texto de cada versículo en las palabras alineadas (Proverbios 3:5-6 ya no arranca con "and man."; Romanos 8:28 ya no incluye el 29; Salmo 23 y 1 Corintios 13 cubren todos los versículos de la cita).
+- El scraper dejaba marcas de notas al pie como "who[i]" (BibleGateway usa `class='footnote'` con comillas simples).
+- Si se renderizaba mientras se transcribía o después de mover el rango, el video usaba subtítulos de otro fragmento: ahora el navegador solo manda las frases si corresponden al clip actual, y si no el servidor las sincroniza.
+- `create_clip.py`: fallaba al generar la miniatura (faltaba `import subprocess`) y usaba subtítulos estimados en vez de sincronizados.
+
+### Agregado
+- **Render como job con progreso**: `POST /api/render` responde al instante y `GET /api/render_status` informa etapa (cola → subtítulos → audio → animación → render → miniatura), porcentaje real a partir de los cuadros de FFmpeg y tiempo restante.
+- Un solo trabajo pesado a la vez (render o Whisper, con un lock compartido).
+- Limpieza automática de temporales (más de 6 h) y uploads (más de 24 h) antes de cada render.
+- Validación: fondos y música solo desde `assets/` o uploads; nombres de upload saneados y formatos permitidos; rangos de 1 s a 10 min; texto de subtítulos, cita y marca de agua escapado para ASS.
+- `.dockerignore`, y `bake_transcripts.py --realign` para alinear transcripciones ya horneadas.
+
+### Eliminado
+- `create_music_tracks.py` (pistas sintéticas archivadas), `assets/mask_test.png` y `parse_whisper_time()` sin uso.
+
+---
+
 ## [3.3.0] - 2026-09-14
 
 ### Agregado

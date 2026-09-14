@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-TikTok Bible Video CLI Generator
+Bible Studio CLI Generator
 Usage:
     python3 create_clip.py --book "Salmos" --chapter 23 --start 0 --end 15 --citation "PSALM 23:1-3"
 """
 import argparse
 import os
+import subprocess
 import time
 import downloader
 import audio_engine
 import subtitles
+import transcripts
 import video_engine
 
 def main():
@@ -19,7 +21,7 @@ def main():
     parser.add_argument("--start", type=float, default=0.0, help="Segundo de inicio del recorte")
     parser.add_argument("--end", type=float, default=15.0, help="Segundo de fin del recorte")
     parser.add_argument("--citation", default="", help="Cita bíblica que se muestra en pantalla (ej: PSALM 23:1-3)")
-    parser.add_argument("--text", default="", help="Texto personalizado para los subtítulos (opcional, por defecto usa el pasaje oficial)")
+    parser.add_argument("--text", default="", help="Texto personalizado para los subtítulos (opcional, por defecto se sincroniza con la narración)")
     parser.add_argument("--visual", default="assets/visuals/loop_good_shepherd.mp4", help="Ruta al video, gif o imagen de fondo")
     parser.add_argument("--music", default="assets/music/Emile_Mosseri_Jacob_And_The_Stone.mp3", help="Ruta a la pista de música")
     parser.add_argument("--music-volume", type=float, default=0.16, help="Volumen de la música (0.0 a 0.5)")
@@ -36,64 +38,68 @@ def main():
     parser.add_argument("--output", default="", help="Ruta del video final de salida")
 
     args = parser.parse_args()
+    if args.end <= args.start:
+        parser.error("--end tiene que ser mayor que --start")
 
     print(f"✝ Descargando/obteniendo audio de David Suchet para {args.book} {args.chapter}...")
     audio_info = downloader.download_audio_chapter(args.book, args.chapter)
     osis = audio_info["osis"]
     book_name = audio_info["book"]["name_en"]
 
-    passage_text = args.text
-    if not passage_text:
-        print("Obteniendo texto del versículo desde BibleGateway NIV-UK...")
-        info = downloader.fetch_passage_text(args.book, args.chapter)
-        passage_text = info.get("text", f"{book_name} {args.chapter}")
-
     citation = downloader.normalize_citation_english(args.citation or f"{book_name} {args.chapter}")
 
     timestamp = int(time.time())
-    cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    cache_dir = os.path.join(base_dir, "cache")
     trimmed_audio = os.path.join(cache_dir, f"cli_voice_{osis}_{timestamp}.mp3")
-    
+
     print(f"🎙️ Recortando audio de {args.start}s a {args.end}s con realce de voz...")
     audio_engine.trim_speech_audio(audio_info["local_path"], trimmed_audio, args.start, args.end)
 
     clip_dur = args.end - args.start
     ass_path = None
+    timed = None
     if not args.no_subtitles and args.style != "none":
-        timed = subtitles.generate_timed_subtitles(passage_text, clip_dur)
+        if args.text:
+            timed = subtitles.generate_timed_subtitles(args.text, clip_dur)
+        else:
+            print("📝 Sincronizando subtítulos con la narración...")
+            timed, source = transcripts.get_clip_phrases(osis, args.chapter, args.start, args.end)
+            print(f"   {len(timed)} frases ({source})")
         ass_path = os.path.join(cache_dir, f"cli_sub_{osis}_{timestamp}.ass")
         subtitles.create_ass_subtitles(timed, ass_path, style_name=args.style, citation=citation, citation_duration=clip_dur)
     elif citation:
         ass_path = os.path.join(cache_dir, f"cli_cit_{osis}_{timestamp}.ass")
         subtitles.create_ass_subtitles([], ass_path, style_name="classicserif", citation=citation, citation_duration=clip_dur)
 
-    out_file = args.output
-    if not out_file:
-        out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
-        out_file = os.path.join(out_dir, f"tiktok_{osis}_{args.chapter}_{timestamp}.mp4")
+    out_file = args.output or os.path.join(base_dir, "outputs", f"tiktok_{osis}_{args.chapter}_{timestamp}.mp4")
 
-    music_to_use = None if args.no_music else args.music
     print(f"🎬 Renderizando video 9:16 con FFmpeg en {out_file}...")
-    video_engine.render_tiktok_video(
-        voice_audio=trimmed_audio,
-        visual_path=args.visual,
-        music_audio=music_to_use,
-        subtitle_ass=ass_path,
-        output_path=out_file,
-        music_volume=args.music_volume,
-        corner_radius=args.radius,
-        slideshow_pacing=args.pacing,
-        framing_mode=args.mode,
-        whisper_phrases=timed if (not args.no_subtitles and 'timed' in locals()) else None,
-        enable_particles=not args.no_particles,
-        enable_light_leak=not args.no_leaks,
-        enable_dynamic_motion=not args.no_motion,
-        enable_film_grain=not args.no_grain
-    )
+    try:
+        video_engine.render_tiktok_video(
+            voice_audio=trimmed_audio,
+            visual_path=os.path.abspath(args.visual),
+            music_audio=None if args.no_music else os.path.abspath(args.music),
+            subtitle_ass=ass_path,
+            output_path=out_file,
+            music_volume=args.music_volume,
+            corner_radius=args.radius,
+            slideshow_pacing=args.pacing,
+            framing_mode=args.mode,
+            whisper_phrases=timed or None,
+            enable_particles=not args.no_particles,
+            enable_light_leak=not args.no_leaks,
+            enable_dynamic_motion=not args.no_motion,
+            enable_film_grain=not args.no_grain
+        )
+    finally:
+        for path in (trimmed_audio, ass_path):
+            if path and os.path.exists(path):
+                os.remove(path)
 
     # Generate thumbnail for library
     thumb_filename = os.path.splitext(os.path.basename(out_file))[0] + ".jpg"
-    thumb_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "thumbnails", thumb_filename)
+    thumb_path = os.path.join(base_dir, "outputs", "thumbnails", thumb_filename)
     os.makedirs(os.path.dirname(thumb_path), exist_ok=True)
     subprocess.run([
         "ffmpeg", "-y", "-ss", f"{min(2.0, clip_dur / 2):.1f}", "-i", out_file,
@@ -106,4 +112,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

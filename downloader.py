@@ -82,6 +82,9 @@ BIBLE_BOOKS = [
     {"osis": "Rev", "name_en": "Revelation", "name_es": "Apocalipsis", "testament": "NT", "chapters": 22},
 ]
 
+# Scraped passage text by (osis, chapter or verse reference); the text never changes
+_PASSAGE_CACHE = {}
+
 USFM_ALIASES = {
     "jhn": "John", "psa": "Ps", "php": "Phil", "pro": "Prov",
     "isa": "Isa", "rom": "Rom", "1co": "1Cor", "2co": "2Cor",
@@ -184,6 +187,9 @@ def fetch_passage_text(book_str: str, chapter: int) -> dict:
     if not book:
         return {"error": "Book not found"}
     osis = book["osis"]
+    cache_key = (osis, str(chapter))
+    if cache_key in _PASSAGE_CACHE:
+        return dict(_PASSAGE_CACHE[cache_key])
     url = f"https://www.biblegateway.com/passage/?search={osis}+{chapter}&version=NIVUK"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     
@@ -195,10 +201,9 @@ def fetch_passage_text(book_str: str, chapter: int) -> dict:
         with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
             raw_html = resp.read().decode("utf-8")
         
-        clean_html = re.sub(r'<sup class="footnote"[^>]*>.*?</sup>', '', raw_html, flags=re.DOTALL)
-        clean_html = re.sub(r'<sup class="crossreference"[^>]*>.*?</sup>', '', clean_html, flags=re.DOTALL)
-        clean_html = re.sub(r'<span class="chapternum"[^>]*>.*?</span>', '', clean_html, flags=re.DOTALL)
-        clean_html = re.sub(r'<sup class="versenum"[^>]*>.*?</sup>', '', clean_html, flags=re.DOTALL)
+        # BibleGateway mixes quote styles (class='footnote' vs class="versenum")
+        clean_html = re.sub(r"<sup[^>]*class=['\"](?:footnote|crossreference|versenum)['\"][^>]*>.*?</sup>", '', raw_html, flags=re.DOTALL)
+        clean_html = re.sub(r"<span[^>]*class=['\"]chapternum['\"][^>]*>.*?</span>", '', clean_html, flags=re.DOTALL)
         clean_html = re.sub(r'<h[1-6][^>]*>.*?</h[1-6]>', '', clean_html, flags=re.DOTALL)
 
         # Unwrap spans nested inside verse text (small-caps "Lord", red-letter "woj"), innermost first;
@@ -222,11 +227,14 @@ def fetch_passage_text(book_str: str, chapter: int) -> dict:
         full_text = " ".join(texts)
         full_text = re.sub(r'\s+', ' ', full_text).strip()
         
-        return {
+        result = {
             "reference": f"{book['name_en']} {chapter}",
             "reference_es": f"{book['name_es']} {chapter}",
             "text": full_text
         }
+        if full_text:
+            _PASSAGE_CACHE[cache_key] = result
+        return dict(result)
     except Exception as e:
         logger.error(f"Error fetching passage text: {e}")
         return {"reference": f"{book['name_en']} {chapter}", "text": ""}

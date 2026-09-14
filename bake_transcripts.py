@@ -50,8 +50,27 @@ def parse_targets(args: list[str]) -> list[tuple[str, int]]:
         targets.append((info["osis"], int(chapter)))
     return targets
 
+def realign_baked():
+    """Align already baked transcripts with the official NIV-UK text (no Whisper needed)."""
+    names = sorted(f for f in os.listdir(transcripts.BAKED_DIR) if f.endswith(".json"))
+    failed = []
+    for i, name in enumerate(names, 1):
+        osis, _, chapter = name[:-len(".json")].rpartition("_")
+        result = transcripts.realign_saved(osis, int(chapter))
+        status = {None: "already aligned", True: "aligned", False: "NOT aligned"}[result]
+        print(f"[{i}/{len(names)}] {osis} {chapter}: {status}")
+        if result is False:
+            failed.append(name)
+        if result is not None:
+            time.sleep(0.5)  # one BibleGateway request per chapter
+    if failed:
+        print("\nNot aligned (text unavailable or mismatch):", ", ".join(failed))
+
 def main():
-    flags = {"--force", "--keep-audio"}
+    flags = {"--force", "--keep-audio", "--realign"}
+    if "--realign" in sys.argv:
+        realign_baked()
+        return
     force = "--force" in sys.argv
     keep_audio = "--keep-audio" in sys.argv
     targets = parse_targets([a for a in sys.argv[1:] if a not in flags])

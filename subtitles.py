@@ -17,7 +17,8 @@ WHISPER_MODEL = os.path.join(MODELS_DIR, "ggml-base.en.bin")
 CACHE_DIR = os.path.join(BASE_DIR, "cache")
 
 # One whisper-cli process at a time: on a shared 0.1 vCPU two runs just starve each other.
-WHISPER_LOCK = threading.Lock()
+# Re-entrant because video renders hold it too (see RENDER_LOCK in app.py) and may whisper their clip.
+WHISPER_LOCK = threading.RLock()
 
 # DTW token alignment. Plain whisper.cpp token offsets drift up to ~1.7s from the
 # spoken word; DTW timestamps land within ~0.05s of the real onset.
@@ -54,18 +55,6 @@ def find_whisper_cli() -> str | None:
         if os.path.exists(candidate):
             return candidate
     return None
-
-def parse_whisper_time(time_str: str) -> float:
-    """Parse 'HH:MM:SS,mmm' or 'HH:MM:SS.mmm' into float seconds."""
-    time_str = time_str.strip().replace(",", ".")
-    parts = time_str.split(":")
-    if len(parts) == 3:
-        h, m, s = parts
-        return int(h) * 3600 + int(m) * 60 + float(s)
-    elif len(parts) == 2:
-        m, s = parts
-        return int(m) * 60 + float(s)
-    return float(time_str)
 
 def format_ass_time(seconds: float) -> str:
     """Format seconds into ASS timestamp: H:MM:SS.cs"""
@@ -350,6 +339,11 @@ def generate_timed_subtitles(
         timed[-1]["end"] = min(total_duration, timed[-1]["end"])
     return timed
 
+def _ass_escape(text: str) -> str:
+    """Single-line ASS text: braces start override tags and backslashes escapes, so neutralize them."""
+    text = re.sub(r"\s+", " ", str(text)).strip()
+    return text.replace("\\", "/").replace("{", "(").replace("}", ")")
+
 def create_ass_subtitles(
     timed_phrases: list[dict],
     output_ass_path: str,
@@ -413,16 +407,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     cit_end = citation_duration or (timed_phrases[-1]["end"] if timed_phrases else 30.0)
 
     if watermark and watermark.strip():
-        wm_text = watermark.strip()
+        wm_text = _ass_escape(watermark)
         lines.append(f"Dialogue: 0,0:00:00.00,{format_ass_time(cit_end)},Watermark,,0,0,0,,{wm_text}")
 
     if citation:
-        lines.append(f"Dialogue: 0,0:00:00.00,{format_ass_time(cit_end)},Citation,,0,0,0,,— {citation.upper()} —")
+        lines.append(f"Dialogue: 0,0:00:00.00,{format_ass_time(cit_end)},Citation,,0,0,0,,— {_ass_escape(citation).upper()} —")
         
     for p in timed_phrases:
         st = format_ass_time(p["start"])
         et = format_ass_time(p["end"])
-        txt = p["text"].strip()
+        txt = _ass_escape(p["text"])
         if text_case == "uppercase":
             txt = txt.upper()
         lines.append(f"Dialogue: 1,{st},{et},Main,,0,0,0,,{txt}")

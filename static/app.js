@@ -193,6 +193,7 @@ async function loadChapterAudio(customStart = null, customEnd = null, customCita
 
     // Clear stale phrases immediately
     state.phrases = [];
+    state.phrasesClip = null;
     renderPhrasesList();
     if (spokenScriptText) {
         spokenScriptText.innerHTML = `<span class="loading-pulse">🪄 Cargando audio y sincronizando pasaje...</span>`;
@@ -311,7 +312,7 @@ const CLIP_STAGE_LABELS = {
     starting: "Preparando transcripción",
     download: "Descargando audio del capítulo",
     trim: "Recortando el fragmento",
-    queue: "En cola: hay otra transcripción en curso",
+    queue: "En cola: el servidor está procesando otro pedido",
     whisper: "Transcribiendo con Whisper"
 };
 
@@ -436,6 +437,8 @@ async function autoTranscribeCurrentSegment() {
         hideClipProgress();
 
         state.phrases = data.phrases || [];
+        // Remember which clip these phrases belong to, so a render never burns subtitles of another range
+        state.phrasesClip = { book: bookSelect.value, chapter: parseInt(chapterSelect.value), start, end };
         renderPhrasesList();
         updateSpokenScriptPreview();
         transcribeStatus.textContent = `${state.phrases.length} frases sincronizadas${data.cached ? " · instantáneo" : ""}`;
@@ -1462,7 +1465,9 @@ async function handleRenderVideo() {
         enable_light_leak: document.getElementById("chkLightLeak") ? document.getElementById("chkLightLeak").checked : true,
         enable_dynamic_motion: document.getElementById("chkDynamicMotion") ? document.getElementById("chkDynamicMotion").checked : true,
         enable_film_grain: document.getElementById("chkFilmGrain") ? document.getElementById("chkFilmGrain").checked : true,
-        phrases: state.phrases
+        // Phrases from the editor only if they were transcribed for exactly this clip;
+        // otherwise (still transcribing, range moved) the server syncs subtitles itself
+        phrases: phrasesMatchCurrentClip() ? state.phrases : null
     };
 
     try {
@@ -1472,8 +1477,9 @@ async function handleRenderVideo() {
             body: JSON.stringify(payload)
         });
 
-        const data = await res.json();
-        if (!data.success) throw new Error(data.detail || "Error en el renderizado");
+        let data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.detail || "Error en el renderizado");
+        if (data.pending) data = await waitForRenderJob(data);
 
         // Load finished video directly in phone stage
         renderedVideoPlayer.src = data.video_url;
@@ -1488,13 +1494,75 @@ async function handleRenderVideo() {
         if (renderSpinner) renderSpinner.classList.add("hidden");
         if (renderSuccessIcon) renderSuccessIcon.classList.remove("hidden");
         renderStatusText.textContent = "¡Video generado con éxito!";
-        if (renderStatusSub) renderStatusSub.textContent = "Listo para publicar en TikTok • Previsualizando en el teléfono";
+        if (renderStatusSub) renderStatusSub.textContent = "Descargalo ahora: el servidor borra los videos cuando se reinicia";
         await loadHistory();
     } catch (e) {
         alert("Error renderizando video: " + e.message);
         renderStatus.classList.add("hidden");
     } finally {
         btnRenderVideo.disabled = false;
+    }
+}
+
+function phrasesMatchCurrentClip() {
+    const clip = state.phrasesClip;
+    if (!clip || !state.phrases || state.phrases.length === 0) return false;
+    return clip.book === bookSelect.value
+        && clip.chapter === parseInt(chapterSelect.value)
+        && Math.abs(clip.start - (parseFloat(startSecInput.value) || 0)) < 0.05
+        && Math.abs(clip.end - (parseFloat(endSecInput.value) || 0)) < 0.05;
+}
+
+const RENDER_STAGE_LABELS = {
+    queue: "En cola: el servidor está procesando otro pedido",
+    subtitles: "Preparando la narración y los subtítulos",
+    audio: "Mezclando la voz de David Suchet con la música",
+    visual: "Animando la obra de arte",
+    encode: "Renderizando el video 9:16",
+    thumbnail: "Generando la miniatura"
+};
+
+function formatEta(sec) {
+    const s = Math.ceil(sec);
+    return s >= 60 ? `${Math.floor(s / 60)} min ${s % 60}s` : `${s}s`;
+}
+
+function showRenderProgress(job) {
+    const pct = Math.max(0, Math.min(100, Math.round(job.progress || 0)));
+    renderStatusText.textContent = `${RENDER_STAGE_LABELS[job.stage] || "Procesando"} · ${pct}%`;
+    if (renderStatusSub) {
+        renderStatusSub.textContent = typeof job.eta_sec === "number" && job.eta_sec >= 1
+            ? `Quedan ~${formatEta(job.eta_sec)}. Dejá esta pestaña abierta.`
+            : "En el servidor puede tardar unos minutos. Dejá esta pestaña abierta.";
+    }
+}
+
+// Poll a background render until it finishes; tolerates short network hiccups.
+async function waitForRenderJob(job) {
+    let failures = 0;
+    while (true) {
+        if (job.stage === "error") throw new Error(job.error || "Error en el renderizado");
+        if (job.done) return job;
+        showRenderProgress(job);
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        let res;
+        try {
+            res = await fetch(`/api/render_status?job_id=${encodeURIComponent(job.job_id)}`);
+        } catch (e) {
+            if (++failures > 20) throw new Error("Se perdió la conexión con el servidor durante el render");
+            continue;
+        }
+        if (res.status === 404) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(body.detail || "El servidor se reinició durante el render. Probá de nuevo.");
+        }
+        if (!res.ok) {
+            // 502/503 while the server restarts; give up after ~30s
+            if (++failures > 20) throw new Error(`El servidor no responde (HTTP ${res.status})`);
+            continue;
+        }
+        failures = 0;
+        job = await res.json();
     }
 }
 
