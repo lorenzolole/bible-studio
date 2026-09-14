@@ -16,6 +16,9 @@ Todos los cambios notables de este proyecto se documentarán en este archivo sig
 - El scraper dejaba marcas de notas al pie como "who[i]" (BibleGateway usa `class='footnote'` con comillas simples).
 - Si se renderizaba mientras se transcribía o después de mover el rango, el video usaba subtítulos de otro fragmento: ahora el navegador solo manda las frases si corresponden al clip actual, y si no el servidor las sincroniza.
 - `create_clip.py`: fallaba al generar la miniatura (faltaba `import subprocess`) y usaba subtítulos estimados en vez de sincronizados.
+- **Subtítulo del teléfono de vista previa fijo en la primera frase**: las frases están cronometradas desde el inicio del clip y el reproductor pasaba el tiempo absoluto del capítulo. Ahora el preview sigue la narración (el video renderizado ya estaba bien). Además se limpia al cargar otro capítulo.
+- El tiempo restante de una transcripción podía contradecir el porcentaje (ej. "82% · ~162s" en local): ahora se usa el avance real de Whisper cuando va adelante.
+- `run.sh` verifica ffmpeg, whisper-cli, el modelo y que el puerto esté libre antes de arrancar.
 
 ### Agregado
 - **Render como job con progreso**: `POST /api/render` responde al instante y `GET /api/render_status` informa etapa (cola → subtítulos → audio → animación → render → miniatura), porcentaje real a partir de los cuadros de FFmpeg y tiempo restante.

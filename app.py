@@ -204,10 +204,18 @@ def job_view(job: dict) -> dict:
         else:
             # Past the estimate (cold container, throttled CPU): keep creeping instead of freezing
             time_fraction = 0.9 + 0.08 * (1 - math.exp(-(elapsed - expected) / expected))
-        fraction = max(min(0.98, job.get("whisper_pct", 0) / 100.0), time_fraction)
+        pct = job.get("whisper_pct", 0)
+        fraction = max(min(0.98, pct / 100.0), time_fraction)
         view["progress"] = round(15 + 82 * fraction)
-        view["eta_sec"] = round(max(0.0, expected - elapsed), 1)
-        view["overtime"] = elapsed > expected
+        # whisper-cli's own percentage wins when it is ahead of the time estimate (e.g. a whole
+        # chapter on Metal), so the ETA never contradicts the bar
+        remaining = max(0.0, expected - elapsed)
+        if pct >= 5:
+            remaining = min(remaining, elapsed * (100 - pct) / pct)
+        if pct >= 5 or elapsed >= 3:
+            # The speed prior is tuned for server clips; give whisper-cli a moment to report first
+            view["eta_sec"] = round(remaining, 1)
+        view["overtime"] = elapsed > expected and pct < 95
     else:
         view["progress"] = 100
     if stage == "done":

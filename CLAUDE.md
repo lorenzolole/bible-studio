@@ -124,12 +124,13 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
    - En la Mac un clip de ~10s se renderiza en 5–15s. En Render (0.1 vCPU, libx264 por software) tarda minutos; por eso el render es un job con progreso.
    - Memoria: cualquier cambio en `video_engine.py` hay que medirlo (`/usr/bin/time -l ffmpeg ...` en la Mac o `docker run --memory=512m`). El techo real es ~512 MB **incluyendo** Python.
    - Los videos en `outputs/` se pierden cuando Render reinicia el contenedor: la UI avisa que hay que descargarlos.
-3. **Comandos para Correr en Local**:
+3. **Uso principal: local** (decisión 2026-09-14: proyecto personal; Render gratis queda secundario porque renderiza lento y avisa por memoria). En la Mac `CHAPTER_WHISPER=1` transcribe capítulos nuevos enteros en ~10s y los guarda alineados en `cache/transcripts/`.
+4. **Comandos para Correr en Local**:
    ```bash
    cd /Users/lolescaldaferro/Antigravity/TikTokBible
    ./run.sh
    ```
-4. **Comando para Desplegar a Producción**:
+5. **Comando para Desplegar a Producción**:
    ```bash
    git add .
    git commit -m "tu mensaje"

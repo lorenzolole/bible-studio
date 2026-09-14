@@ -194,6 +194,7 @@ async function loadChapterAudio(customStart = null, customEnd = null, customCita
     // Clear stale phrases immediately
     state.phrases = [];
     state.phrasesClip = null;
+    previewCaptionText.textContent = "…";
     renderPhrasesList();
     if (spokenScriptText) {
         spokenScriptText.innerHTML = `<span class="loading-pulse">🪄 Cargando audio y sincronizando pasaje...</span>`;
@@ -1380,7 +1381,10 @@ function setupEventListeners() {
 
 function updateActiveCaption(currentAudioSec) {
     if (!state.phrases || state.phrases.length === 0) return;
-    const active = state.phrases.find(p => currentAudioSec >= p.start && currentAudioSec <= p.end);
+    // Phrases are timed from the clip start, while the audio element plays the whole chapter
+    const clipStart = state.phrasesClip ? state.phrasesClip.start : (parseFloat(startSecInput.value) || 0);
+    const clipTime = currentAudioSec - clipStart;
+    const active = state.phrases.find(p => clipTime >= p.start && clipTime <= p.end);
     if (active) {
         previewCaptionText.textContent = active.text;
     }
