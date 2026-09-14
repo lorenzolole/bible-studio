@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Courier+Prime:wght@400;700&family=Playfair+Display:wght@600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/style.css?v=2.7.0">
+    <link rel="stylesheet" href="/static/style.css?v=3.5.0">
 </head>
 <body class="dark-theme">
     <div class="app-container">
@@ -328,6 +328,7 @@
                                     <div class="segmented-control">
                                         <button type="button" class="segment-btn active" data-sub-pos="bottom">Inferior</button>
                                         <button type="button" class="segment-btn" data-sub-pos="center">Centro</button>
+                                        <button type="button" class="segment-btn" data-sub-pos="top">Arriba</button>
                                     </div>
                                 </div>
                                 <div class="control-box">
@@ -352,13 +353,63 @@
                     </div>
 
                     <div class="card-content">
-                        <div class="tabs-bar">
+                        <!-- Edit template -->
+                        <div class="control-box" id="editTemplateBox">
+                            <label class="section-label">Estilo de Edit</label>
+                            <div class="edit-templates-row">
+                                <button type="button" class="edit-template-btn active" data-template="contemplative">
+                                    <div class="framing-badge-icon">🖼️</div>
+                                    <div class="framing-info">
+                                        <strong>Contemplativo</strong>
+                                        <span>Una obra, zoom lento y marco</span>
+                                    </div>
+                                </button>
+                                <button type="button" class="edit-template-btn" data-template="slideshow">
+                                    <div class="framing-badge-icon">🎞️</div>
+                                    <div class="framing-info">
+                                        <strong>Presentación</strong>
+                                        <span>Varias obras con fundidos</span>
+                                    </div>
+                                </button>
+                                <button type="button" class="edit-template-btn" data-template="beat_montage">
+                                    <div class="framing-badge-icon">⚡</div>
+                                    <div class="framing-info">
+                                        <strong>Jesus Edit</strong>
+                                        <span>Cortes al beat, figura adelante</span>
+                                    </div>
+                                </button>
+                            </div>
+                            <p id="editTemplateHint" class="edit-template-hint">Elegí una obra: se anima con un acercamiento lento dentro del marco.</p>
+                        </div>
+
+                        <!-- Jesus Edit options -->
+                        <div id="montageOptionsBox" class="control-box mt-3 hidden">
+                            <label class="section-label">Figura en primer plano</label>
+                            <div class="figures-grid" id="figuresGrid"></div>
+
+                            <label class="section-label mt-3">Ritmo de cortes (sincronizado con la música)</label>
+                            <div class="segmented-control" id="cutRhythmControl">
+                                <button type="button" class="segment-btn active" data-rhythm="fast">Rápido</button>
+                                <button type="button" class="segment-btn" data-rhythm="medium">Medio</button>
+                                <button type="button" class="segment-btn" data-rhythm="slow">Lento</button>
+                            </div>
+
+                            <label class="fx-toggle-card mt-3">
+                                <input type="checkbox" id="chkFlash" checked class="checkbox-styled">
+                                <div class="fx-toggle-info">
+                                    <strong>⚡ Flash en los cortes</strong>
+                                    <span>Destello blanco en los golpes fuertes</span>
+                                </div>
+                            </label>
+                        </div>
+
+                        <div class="tabs-bar mt-3" id="visualSourceTabs">
                             <button class="tab-btn active" data-tab="single">Obras Individuales</button>
                             <button class="tab-btn" data-tab="slideshow">Colecciones Temáticas</button>
                         </div>
 
                         <div id="tabSingleVisuals" class="tab-content-panel active">
-                            <div class="visuals-mode-toolbar">
+                            <div class="visuals-mode-toolbar" id="multiSelectToolbar">
                                 <label class="multi-select-toggle-label">
                                     <input type="checkbox" id="chkMultiSelectVisuals" class="checkbox-styled">
                                     <span>Selección múltiple libre (crear presentación)</span>
@@ -380,7 +431,7 @@
                         </div>
 
                         <!-- Framing & Canvas Mode -->
-                        <div class="control-box mt-3">
+                        <div class="control-box mt-3" id="framingModesBox">
                             <label class="section-label">Estilo de Lienzo & Fondo</label>
                             <div class="framing-modes-row">
                                 <button type="button" class="framing-mode-btn active" data-framing="pitch_black">
@@ -415,7 +466,7 @@
                             <input type="range" id="radiusSlider" min="10" max="80" value="42" class="range-slider">
                         </div>
 
-                        <div class="control-box mt-3">
+                        <div class="control-box mt-3" id="frameStyleBox">
                             <label class="section-label">Acabado del Marco</label>
                             <div class="frame-styles-row">
                                 <button type="button" class="frame-style-btn active" data-frame="vintage">
@@ -594,6 +645,8 @@
                             </div>
                         </div>
 
+                        <img id="previewFigure" class="phone-figure-layer hidden" alt="">
+
                         <div class="phone-captions-layer">
                             <div id="previewCaptionText" class="caption-bubble font-typewriter">
                                 The Lord is my shepherd
@@ -606,8 +659,22 @@
                             </div>
                         </div>
 
+                        <video id="editPreviewPlayer" playsinline loop class="edit-preview-layer hidden"></video>
+                        <div id="previewLoadingOverlay" class="preview-loading-overlay hidden">
+                            <div class="progress-spinner"></div>
+                            <span id="previewLoadingText">Generando vista previa…</span>
+                        </div>
                         <video id="renderedVideoPlayer" controls playsinline class="rendered-video-layer hidden"></video>
                     </div>
+
+                    <div class="edit-preview-bar">
+                        <button type="button" id="btnPreviewEdit" class="btn-preview-edit">▶ Previsualizar edit</button>
+                        <label class="preview-auto-toggle" title="Regenerar la vista previa cada vez que cambiás una opción">
+                            <input type="checkbox" id="chkAutoPreview" checked class="checkbox-styled">
+                            <span>Auto</span>
+                        </label>
+                    </div>
+                    <p id="previewEditStatus" class="preview-edit-status">La vista previa es el edit real en 540p (hasta 20s), con audio y subtítulos.</p>
 
                     <div id="downloadArea" class="download-action-card hidden">
                         <a id="btnDownload" href="#" download class="btn-download-mp4">
@@ -620,6 +687,6 @@
         </main>
     </div>
 
-    <script src="/static/app.js?v=2.7.0"></script>
+    <script src="/static/app.js?v=3.5.0"></script>
 </body>
 </html>

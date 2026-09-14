@@ -78,6 +78,10 @@ python3 create_clip.py --book "Salmos" --chapter 23 --start 0 --end 15 --citatio
 - `subtitles.py`: ASS subtitle generator with whisper-cli word-level (DTW) transcription.
 - `transcripts.py`: Per-chapter word transcripts, sliced instantly for any clip.
 - `text_alignment.py`: Aligns Whisper word timings with the official NIV-UK text.
+- `beats.py`: Numpy beat tracker used to cut the "Jesus Edit" montage on the music's beats.
+- `figures.py`: Cached still layers (foreground figures with glow, frame finishes, fullscreen vignette).
+- `tools/lift_subject.js`: Cuts a subject out of an artwork with Apple Vision to create new figures.
+- `docs/CODEX_PROMPTS.md`: Prompts to generate new figures and montage artworks with Codex.
 - `bake_transcripts.py`: Pre-generates transcripts for popular chapters into `assets/transcripts/`.
 - `video_engine.py`: FFmpeg vertical video compositor with motion & vignette filters.
 - `create_clip.py`: Command-line batch generator.

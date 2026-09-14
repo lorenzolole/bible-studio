@@ -368,8 +368,12 @@ ScaledBorderAndShadow: yes
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 """
     
-    # Calculate vertical margins based on position
-    if position == "center":
+    # Calculate vertical margins based on position (bottom-anchored lines, so text grows upward)
+    if position == "top":
+        # Upper third: clear of a foreground figure's face in the Jesus Edit
+        main_mv = 1250
+        cit_mv = 1170
+    elif position == "center":
         main_mv = 820
         cit_mv = 740
     else:
@@ -382,8 +386,10 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
             f"Style: Citation,Georgia,36,&H00D0D0D0,&H000000FF,&H00000000,&H00000000,1,1,0,0,100,100,2,0,1,2,2,2,80,80,{cit_mv},1\n"
         ),
         "spokenbyhim": (
-            f"Style: Main,Georgia,54,&H0045E1FF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,3,4,5,70,70,{120 if position == 'bottom' else 460},1\n"
-            f"Style: Citation,Georgia,36,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,1,0,0,100,100,2,0,1,2,2,2,80,80,{cit_mv},1\n"
+            (f"Style: Main,Georgia,54,&H0045E1FF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,3,4,2,70,70,{main_mv},1\n"
+             if position == "top" else
+             f"Style: Main,Georgia,54,&H0045E1FF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,3,4,5,70,70,{120 if position == 'bottom' else 460},1\n")
+            + f"Style: Citation,Georgia,36,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,1,0,0,100,100,2,0,1,2,2,2,80,80,{cit_mv},1\n"
         ),
         "classicserif": (
             f"Style: Main,Georgia,50,&H00FFFFFF,&H000000FF,&H00000000,&HA0101010,0,0,0,0,100,100,1,0,1,2,3,2,80,80,{main_mv - 20},1\n"

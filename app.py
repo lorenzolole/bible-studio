@@ -1,5 +1,7 @@
+import json
 import math
 import os
+import random
 import re
 import shutil
 import time
@@ -11,10 +13,12 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from PIL import Image
 from typing import List, Union, Optional
 
 import downloader
 import audio_engine
+import figures
 import subtitles
 import transcripts
 import video_engine
@@ -66,6 +70,16 @@ FINISHED_STAGES = ("done", "error", "superseded")
 RENDER_LOCK = subtitles.WHISPER_LOCK
 MAX_RENDER_SEC = 600
 
+# Phone previews: same composition at 540x960, first PREVIEW_MAX_SEC seconds of the clip.
+# A newer preview from the same browser tab cancels the one in progress.
+PREVIEWS_DIR = os.path.join(CACHE_DIR, "previews")
+PREVIEW_MAX_SEC = 20
+LATEST_PREVIEW = {}
+os.makedirs(PREVIEWS_DIR, exist_ok=True)
+
+# A beat montage needs enough artworks to cut between; below this, all bundled artworks are used
+MIN_MONTAGE_IMAGES = 3
+
 # Render temp files and uploads older than these are deleted before each render
 # (Render's disk is small and wiped on restart anyway).
 CACHE_TEMP_PREFIXES = ("img_loop_", "slideshow_", "mix_", "voice_", "sub_", "transcribe_voice_", "whisper_")
@@ -104,6 +118,13 @@ class RenderRequest(BaseModel):
     enable_light_leak: bool = True
     enable_dynamic_motion: bool = True
     enable_film_grain: bool = True
+    # "classic" (one artwork or a slideshow) or "beat_montage" (fast cuts on the music's beats)
+    edit_template: str = "classic"
+    figure: Optional[str] = None
+    cut_rhythm: str = "fast"
+    enable_flash: bool = True
+    frame_style: str = "vintage"
+    client_id: Optional[str] = None
 
 @app.get("/", response_class=HTMLResponse)
 async def read_index():
@@ -447,6 +468,29 @@ async def get_presets():
         }
     ]
 
+    # Artworks dropped into assets/visuals without code changes (named via catalog.json when present)
+    known = {v["id"] for v in visuals}
+    catalog_path = os.path.join(VISUALS_DIR, "catalog.json")
+    extra_meta = {}
+    if os.path.exists(catalog_path):
+        with open(catalog_path, "r", encoding="utf-8") as f:
+            extra_meta = json.load(f)
+    for filename in sorted(os.listdir(VISUALS_DIR)):
+        ext = os.path.splitext(filename)[1].lower()
+        if filename in known or ext not in (".jpg", ".jpeg", ".png", ".webp", ".mp4"):
+            continue
+        meta = extra_meta.get(filename, {})
+        is_video = ext == ".mp4"
+        visuals.append({
+            "id": filename,
+            "name": meta.get("name") or os.path.splitext(filename)[0].replace("_", " ").title(),
+            "category": meta.get("category", "Arte Bíblico"),
+            "path": f"assets/visuals/{filename}",
+            "thumb": f"/assets/visuals/{filename}" if is_video else ensure_thumbnail(filename),
+            "url": f"/assets/visuals/{filename}",
+            "type": "video" if is_video else "image"
+        })
+
     collections = [
         {
             "id": "col_jesus_sacred",
@@ -522,7 +566,22 @@ async def get_presets():
                 "url": f"/assets/music/{f}"
             })
             
-    return {"visuals": visuals, "collections": collections, "music": music}
+    return {"visuals": visuals, "collections": collections, "music": music, "figures": figures.catalog()}
+
+def ensure_thumbnail(filename: str) -> str:
+    """URL of a 320px thumbnail for an artwork in assets/visuals, generated on first use."""
+    stem = os.path.splitext(filename)[0]
+    thumb_path = os.path.join(THUMBS_DIR, f"{stem}.jpg")
+    if not os.path.exists(thumb_path):
+        try:
+            with Image.open(os.path.join(VISUALS_DIR, filename)) as image:
+                image = image.convert("RGB")
+                image.thumbnail((320, 320))
+                image.save(thumb_path, quality=85)
+        except Exception as e:
+            logger.warning(f"Thumbnail failed for {filename}: {e}")
+            return f"/assets/visuals/{filename}"
+    return f"/thumbnails/{stem}.jpg"
 
 def safe_upload_name(prefix: str, original: Optional[str], allowed_extensions: tuple) -> str:
     """Filesystem-safe upload name, rejecting file types the renderer can't use."""
@@ -585,7 +644,8 @@ def prune_cache():
     """Delete stale render/transcription temp files and old uploads."""
     now = time.time()
     targets = ((CACHE_DIR, CACHE_TEMP_PREFIXES, CACHE_TEMP_MAX_AGE_SEC),
-               (UPLOADS_DIR, ("upload_",), UPLOAD_MAX_AGE_SEC))
+               (UPLOADS_DIR, ("upload_",), UPLOAD_MAX_AGE_SEC),
+               (PREVIEWS_DIR, ("preview_",), 1800))
     for directory, prefixes, max_age in targets:
         for name in os.listdir(directory):
             path = os.path.join(directory, name)
@@ -613,10 +673,14 @@ def render_job_view(job: dict) -> dict:
         view.update(success=True, **job["result"])
     elif stage == "error":
         view.update(success=False, error=job.get("error"))
+    elif stage == "superseded":
+        view.update(success=False, superseded=True)
     return view
 
-def run_render_job(job: dict, book_info: dict, req: RenderRequest, visual, music: Optional[str]):
+def run_render_job(job: dict, book_info: dict, req: RenderRequest, visual, music: Optional[str],
+                   figure: Optional[str] = None, preview: bool = False):
     temp_files = []
+    should_abort = job.get("should_abort")
 
     def on_progress(update: dict):
         if update.get("stage") and update["stage"] != job["stage"]:
@@ -626,10 +690,16 @@ def run_render_job(job: dict, book_info: dict, req: RenderRequest, visual, music
 
     try:
         with RENDER_LOCK:
+            if should_abort and should_abort():
+                job.update(stage="superseded")
+                return
             prune_cache()
             on_progress({"stage": "subtitles"})
-            result = render_clip(book_info, req, visual, music, on_progress, temp_files)
+            result = render_clip(book_info, req, visual, music, figure, on_progress, temp_files,
+                                 preview=preview, should_abort=should_abort)
         job.update(stage="done", result=result)
+    except video_engine.RenderCancelled:
+        job.update(stage="superseded")
     except Exception as e:
         logger.error(f"Render failed: {e}", exc_info=True)
         job.update(stage="error", error=str(e))
@@ -639,9 +709,13 @@ def run_render_job(job: dict, book_info: dict, req: RenderRequest, visual, music
                 os.remove(path)
         job["finished_at"] = time.time()
 
-@app.post("/api/render")
-def render_video(req: RenderRequest):
-    """Validate the request and start a background render; poll /api/render_status for progress."""
+def bundled_artworks() -> list[str]:
+    """Absolute paths of every bundled still artwork (montage fallback)."""
+    return [os.path.join(VISUALS_DIR, name) for name in sorted(os.listdir(VISUALS_DIR))
+            if name.lower().endswith(video_engine.IMAGE_EXTENSIONS)]
+
+def prepare_render(req: RenderRequest):
+    """Validate a render/preview request. Returns (book_info, visual, music, figure)."""
     book_info = downloader.resolve_book(req.book)
     if not book_info:
         raise HTTPException(status_code=400, detail="Libro inválido")
@@ -656,13 +730,44 @@ def render_video(req: RenderRequest):
     visuals = [resolve_media_path(p, "Fondo visual") for p in paths]
     music = resolve_media_path(req.music_path, "Música") if req.music_path else None
 
+    figure = None
+    if req.edit_template == "beat_montage":
+        figure = resolve_media_path(req.figure, "Figura") if req.figure else None
+        images = [p for p in visuals if p.lower().endswith(video_engine.IMAGE_EXTENSIONS)]
+        if len(images) < MIN_MONTAGE_IMAGES:
+            # Not enough picked: cut between all artworks (except the one the figure was cut out of),
+            # in an order that varies per passage
+            figure_source = figures.source_image(figure) if figure else None
+            images = [p for p in bundled_artworks() if os.path.basename(p) != figure_source]
+            random.Random(f"{req.book}{req.chapter}{req.start_sec:.1f}").shuffle(images)
+        return book_info, images, music, figure
+
+    visual = visuals if isinstance(req.visual_paths, list) else visuals[0]
+    return book_info, visual, music, figure
+
+def start_render_job(req: RenderRequest, preview: bool) -> dict:
+    book_info, visual, music, figure = prepare_render(req)
     job = {"id": uuid.uuid4().hex, "stage": "queue"}
+    if preview and req.client_id:
+        client_id = req.client_id
+        LATEST_PREVIEW[client_id] = job
+        job["should_abort"] = lambda: LATEST_PREVIEW.get(client_id) is not job
     with JOBS_LOCK:
         prune_finished_jobs()
         RENDER_JOBS[job["id"]] = job
-    visual = visuals if isinstance(req.visual_paths, list) else visuals[0]
-    threading.Thread(target=run_render_job, args=(job, book_info, req, visual, music), daemon=True).start()
+    threading.Thread(target=run_render_job, args=(job, book_info, req, visual, music, figure, preview), daemon=True).start()
     return {"success": True, "pending": True, **render_job_view(job)}
+
+@app.post("/api/render")
+def render_video(req: RenderRequest):
+    """Validate the request and start a background render; poll /api/render_status for progress."""
+    return start_render_job(req, preview=False)
+
+@app.post("/api/preview")
+def preview_video(req: RenderRequest):
+    """Fast 540x960 render of the current edit for the phone preview (poll /api/render_status).
+    A newer preview from the same tab (client_id) cancels this one."""
+    return start_render_job(req, preview=True)
 
 @app.get("/api/render_status")
 def render_status(job_id: str):
@@ -671,21 +776,24 @@ def render_status(job_id: str):
         raise HTTPException(status_code=404, detail="Render no encontrado: el servidor se reinició. Probá de nuevo.")
     return render_job_view(job)
 
-def render_clip(book_info: dict, req: RenderRequest, visual, music: Optional[str], on_progress, temp_files: list) -> dict:
-    """Trim the narration, build subtitles and render the video. Returns the library entry."""
+def render_clip(book_info: dict, req: RenderRequest, visual, music: Optional[str], figure: Optional[str],
+                on_progress, temp_files: list, preview: bool = False, should_abort=None) -> dict:
+    """Trim the narration, build subtitles and render the video. Returns the library entry,
+    or just the video URL for a phone preview."""
     osis = book_info["osis"]
     book_name_clean = book_info["name_es"].replace(" ", "_").replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ú","u")
     audio_info = downloader.download_audio_chapter(osis, req.chapter)
 
     stamp = uuid.uuid4().hex[:8]
-    clip_duration = req.end_sec - req.start_sec
+    end_sec = min(req.end_sec, req.start_sec + PREVIEW_MAX_SEC) if preview else req.end_sec
+    clip_duration = end_sec - req.start_sec
     trimmed_voice = os.path.join(CACHE_DIR, f"voice_{osis}_{req.chapter}_{stamp}.mp3")
     temp_files.append(trimmed_voice)
     audio_engine.trim_speech_audio(
         audio_info["local_path"],
         trimmed_voice,
         start_sec=req.start_sec,
-        end_sec=req.end_sec,
+        end_sec=end_sec,
         enhance_voice=True
     )
 
@@ -698,7 +806,7 @@ def render_clip(book_info: dict, req: RenderRequest, visual, music: Optional[str
         if not timed_phrases and req.custom_text:
             timed_phrases = subtitles.generate_timed_subtitles(req.custom_text, clip_duration)
         elif not timed_phrases:
-            timed_phrases, _ = transcripts.get_clip_phrases(osis, req.chapter, req.start_sec, req.end_sec)
+            timed_phrases, _ = transcripts.get_clip_phrases(osis, req.chapter, req.start_sec, end_sec)
 
         ass_path = os.path.join(CACHE_DIR, f"sub_{osis}_{req.chapter}_{stamp}.ass")
         temp_files.append(ass_path)
@@ -727,9 +835,13 @@ def render_clip(book_info: dict, req: RenderRequest, visual, music: Optional[str
             watermark=req.watermark or ""
         )
 
-    # Human-readable filename
-    out_filename = f"{book_name_clean}_{req.chapter}_{int(clip_duration)}s_{time.strftime('%H%M%S')}.mp4"
-    out_path = os.path.join(OUTPUTS_DIR, out_filename)
+    if preview:
+        out_filename = f"preview_{stamp}.mp4"
+        out_path = os.path.join(PREVIEWS_DIR, out_filename)
+    else:
+        # Human-readable filename
+        out_filename = f"{book_name_clean}_{req.chapter}_{int(clip_duration)}s_{time.strftime('%H%M%S')}.mp4"
+        out_path = os.path.join(OUTPUTS_DIR, out_filename)
 
     video_engine.render_tiktok_video(
         voice_audio=trimmed_voice,
@@ -746,8 +858,18 @@ def render_clip(book_info: dict, req: RenderRequest, visual, music: Optional[str
         enable_light_leak=req.enable_light_leak,
         enable_dynamic_motion=req.enable_dynamic_motion,
         enable_film_grain=req.enable_film_grain,
+        edit_template=req.edit_template,
+        figure_path=figure,
+        cut_rhythm=req.cut_rhythm,
+        enable_flash=req.enable_flash,
+        frame_style=req.frame_style,
+        preview=preview,
+        should_abort=should_abort,
         on_progress=on_progress
     )
+
+    if preview:
+        return {"preview": True, "video_url": f"/cache/previews/{out_filename}", "duration": clip_duration}
 
     # Generate thumbnail for library
     on_progress({"stage": "thumbnail"})

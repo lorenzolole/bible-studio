@@ -2,6 +2,27 @@
 
 Todos los cambios notables de este proyecto se documentarán en este archivo siguiendo el formato [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
+## [3.5.0] - 2026-09-14
+
+### Agregado
+- **Estilo de Edit** en el paso 03: *Contemplativo* (una obra con zoom lento y marco), *Presentación* (varias obras con fundidos) y **Jesus Edit**. Cada estilo muestra solo los controles que le aplican.
+- **Jesus Edit**: las obras cortan al ritmo de la música, con zoom de impacto en cada corte, flash blanco en los golpes fuertes y la figura de Jesús adelante, con un resplandor cálido.
+  - Beat tracker propio en `beats.py` (numpy, sin librosa, cacheado por pista): con ritmo Rápido, Medio o Lento, los cortes caen cada k beats o subdividen el beat si la canción es lenta.
+  - Con "Sin figura" queda un edit de cortes puros.
+  - Si se eligen menos de 3 obras, usa todas en un orden que cambia según el pasaje, sin incluir la obra de la que salió la figura.
+  - Cada corte se renderiza como un segmento corto cacheado y se unen sin recodificar (pico medido: 354 MB con figura).
+- **Vista previa real en el teléfono**: `POST /api/preview` renderiza la misma composición en 540×960 (primeros 20s) con audio y subtítulos. Se regenera sola 1.2s después de cualquier cambio (modo Auto) y un preview nuevo cancela al que estaba en curso, frenando FFmpeg. Se compone directamente a 540×960 y los cortes del montaje se renderizan en paralelo (3 en la Mac, 1 en Docker): un Jesus Edit de 15s tarda ~7s con segmentos en caché y ~9s sin caché (antes 13.6s y 18.8s).
+- **Subtítulos "Arriba"**: nueva posición en el tercio superior. El Jesus Edit la activa sola para que el texto no tape la cara de la figura, y vuelve a "Inferior" al salir.
+- **Figuras** en `assets/figures/` (PNG con transparencia + `catalog.json`, que incluye `source`, la obra de origen): `figures.py` les agrega el resplandor y el fundido inferior y los cachea. `tools/lift_subject.js` recorta el sujeto de cualquier obra con Apple Vision, sin compilar nada. Figura incluida: "Jesús en Claroscuro".
+- **Acabados del marco en el render**: aro dorado fino (*Dorado Clásico*) y halo cálido (*Resplandor*). Antes solo existían en el preview estático.
+- Las obras nuevas que se agregan a `assets/visuals/` aparecen solas: el nombre sale de `catalog.json` y la miniatura se genera sola.
+- `docs/CODEX_PROMPTS.md`: prompts listos para que Codex genere 8 figuras de Jesús y 16 obras de fondo para el montaje.
+
+### Cambiado
+- Pantalla completa: las franjas oscuras de borde duro pasan a ser una viñeta con degradé suave.
+
+---
+
 ## [3.4.0] - 2026-09-14
 
 ### Corregido

@@ -6,7 +6,7 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
 
 ## 📌 Contexto Rápido & Enlaces Oficiales
 
-- **Nombre del Proyecto**: Bible Studio *(v3.4.0 — renombrado desde TikTok Bible Studio)*.
+- **Nombre del Proyecto**: Bible Studio *(v3.5.0 — renombrado desde TikTok Bible Studio)*.
 - **Repositorio Oficial en GitHub**: [https://github.com/lorenzolole/bible-studio](https://github.com/lorenzolole/bible-studio)
   - **Cuenta GitHub Activa**: `lorenzolole`
   - **Rama Principal**: `main`
@@ -53,6 +53,11 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
 
 - `app.py`: Servidor FastAPI. Endpoints: `/api/books`, `/api/chapter_info`, `/api/chapter_transcription`, `/api/transcribe` + `/api/transcribe_status`, `/api/render` + `/api/render_status`, `/api/presets`, `/api/videos`, `/api/upload_visual`, `/api/upload_music`, `/api/health`. Transcripciones con Whisper y renders corren como jobs en threads (`TRANSCRIBE_JOBS`, `RENDER_JOBS`) que el navegador consulta. `RENDER_LOCK` es el mismo `RLock` que Whisper: un solo trabajo pesado a la vez. Valida rutas de fondos/música (`resolve_media_path`: solo `assets/` y uploads), sanea uploads y limpia temporales (`prune_cache`).
 - `transcripts.py`: Transcripciones palabra por palabra por capítulo, alineadas con el texto oficial. `get_clip_phrases()` resuelve los subtítulos de un clip: recorte de la transcripción del capítulo → `SESSION_CLIP_CACHE` → Whisper del clip (alineado) → estimación por texto. Lee `assets/transcripts/` (horneadas) y `cache/transcripts/` (runtime).
+- `beats.py`: Beat tracker (numpy): onset por flujo espectral, tempo por autocorrelación y beats con programación dinámica (Ellis). `detect_beats()` cachea en `cache/beats/`.
+- `figures.py`: Capas RGBA fijas cacheadas en `cache/layers/`: figura con resplandor (`figure_layer`), acabados del marco (`frame_decoration`), viñeta de pantalla completa y catálogo de `assets/figures/`. Como CLI hace un recorte por luminancia para fondos negros (fallback).
+- `tools/lift_subject.js`: Recorta el sujeto de una obra con Apple Vision (`osascript -l JavaScript tools/lift_subject.js in.jpg assets/figures/out.png`). Swift no compila en estas Command Line Tools (bug de `SwiftBridging`), por eso es JXA.
+- `assets/figures/`: Figuras PNG con transparencia + `catalog.json` (`name`, `source` = obra de origen, que el montaje excluye).
+- `docs/CODEX_PROMPTS.md`: Prompts para que Codex genere figuras y obras de fondo.
 - `text_alignment.py`: `align_words_to_text()` conserva los tiempos de Whisper y toma palabras, puntuación y mayúsculas del NIV-UK (difflib; si coincide menos del 60% no toca nada).
 - `bake_transcripts.py`: Hornea transcripciones en la Mac (Metal) para commitearlas: `WHISPER_THREADS=8 python3 bake_transcripts.py [LIBRO CAP ...] [--force] [--keep-audio]`. `--realign` alinea con el texto oficial las ya horneadas.
 - `downloader.py`: Motor de scraping y descarga de audio de David Suchet y texto bíblico de BibleGateway. Limpieza de encabezados HTML (`<h1-h6>`), notas al pie, spans anidados (small-caps "LORD", palabras de Jesús) y entidades `&nbsp;`.
@@ -72,7 +77,14 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
 
 ---
 
-## ⚡ Cambios Recientes Realizados (v3.4.0)
+## ⚡ Cambios Recientes Realizados (v3.5.0)
+
+1. **Estilos de edit** (`state.editTemplate` en `app.js`: `contemplative`, `slideshow`, `beat_montage`). En la API se mandan como `edit_template` = `classic` o `beat_montage`, más `figure`, `cut_rhythm` (`fast`/`medium`/`slow`), `enable_flash` y `frame_style` (`vintage`/`minimal`/`glow`, que ahora sí se renderizan).
+2. **Jesus Edit** (`video_engine.build_beat_montage`): `montage_cut_times()` alinea los cortes a los beats de la música (la mezcla usa la música desde 0s). Cada corte es un `montage_seg_*.mp4` cacheado (zoom de impacto de 12%, flash opcional, oscurecido si hay figura) y se concatenan con `-c copy`. La composición final va a pantalla completa con la figura anclada abajo a 1080 px de ancho.
+3. **Vista previa**: `POST /api/preview` usa el mismo `render_clip` con `preview=True` → 540×960, `ultrafast`, máximo 20s, en `cache/previews/`. La composición se arma directo en el lienzo chico: en `_render_tiktok_video`, `canvas_w/canvas_h/scale` escalan todas las medidas en píxeles. Los segmentos del montaje se renderizan en paralelo (`MONTAGE_WORKERS`: 3 por defecto, 1 en Docker). Subtítulos: posición `top` (tercio superior), que el Jesus Edit activa sola. Se consulta con `/api/render_status`. `LATEST_PREVIEW[client_id]` + `video_engine._abort` matan el FFmpeg de un preview reemplazado (`RenderCancelled` → `superseded`). En el front, un listener delegado en `.editor-pane` llama a `schedulePreview()` en cada cambio.
+4. **Assets nuevos sin tocar código**: figuras en `assets/figures/` + `catalog.json`; obras en `assets/visuals/` + `catalog.json` (miniaturas automáticas). Para generarlos: `docs/CODEX_PROMPTS.md`.
+
+### v3.4.0
 
 1. **Render en producción arreglado**: FFmpeg llegaba a ~826 MB y el contenedor moría (502). Pico medido ahora: ~300–380 MB. Ver reglas de memoria en `video_engine.py`; no volver a usar entradas `-i` para overlays ni `.mov` ARGB.
 2. **Render como job**: `POST /api/render` → `{pending, job_id}`; `GET /api/render_status` → etapa (`queue`, `subtitles`, `audio`, `visual`, `encode`, `thumbnail`), `progress`, `eta_sec`, y al terminar `video_url`/`filename`. El frontend (`waitForRenderJob`) muestra el avance en la tarjeta de render.

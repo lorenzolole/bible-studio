@@ -1458,14 +1458,16 @@ body.dark-theme {
 }
 
 /* FRAMING MODES SELECTOR */
-.framing-modes-row {
+.framing-modes-row,
+.edit-templates-row {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: 8px;
     margin-top: 4px;
 }
 
-.framing-mode-btn {
+.framing-mode-btn,
+.edit-template-btn {
     background: var(--bg-surface-elevated);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
@@ -1478,12 +1480,14 @@ body.dark-theme {
     transition: all var(--transition-fast);
 }
 
-.framing-mode-btn:hover {
+.framing-mode-btn:hover,
+.edit-template-btn:hover {
     border-color: var(--border-hover);
     background: var(--bg-surface-hover);
 }
 
-.framing-mode-btn.active {
+.framing-mode-btn.active,
+.edit-template-btn.active {
     background: rgba(255, 255, 255, 0.08);
     border-color: #ffffff;
 }
@@ -1592,19 +1596,20 @@ body.dark-theme {
 }
 
 /* PHONE MEDIA FRAME STYLES IN MOCKUP */
+/* Mirrors the rendered finishes: gold hairline ring, no ring, warm halo */
 .phone-media-frame.frame-vintage {
-    border: 1px solid rgba(255, 255, 255, 0.25);
+    border: 1px solid rgba(201, 164, 92, 0.92);
     box-shadow: 0 16px 36px rgba(0, 0, 0, 0.85);
 }
 
 .phone-media-frame.frame-minimal {
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    border: none;
     box-shadow: 0 16px 36px rgba(0, 0, 0, 0.85);
 }
 
 .phone-media-frame.frame-glow {
-    border: 1px solid rgba(255, 255, 255, 0.4);
-    box-shadow: 0 0 24px rgba(255, 255, 255, 0.12), 0 16px 36px rgba(0, 0, 0, 0.85);
+    border: none;
+    box-shadow: 0 0 22px 4px rgba(240, 200, 120, 0.35), 0 16px 36px rgba(0, 0, 0, 0.85);
 }
 
 /* MUSIC CARDS */
@@ -2181,6 +2186,164 @@ body.dark-theme {
     object-fit: cover;
     z-index: 30;
     background: #000000;
+}
+
+/* EDIT TEMPLATES & JESUS EDIT OPTIONS */
+.edit-template-hint {
+    margin: 8px 0 0;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text-muted);
+}
+
+.figures-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.figure-card {
+    background: radial-gradient(circle at 50% 35%, #2a2520 0%, #0c0b0a 75%);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 6px 6px 8px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    transition: all var(--transition-fast);
+}
+
+.figure-card:hover {
+    border-color: var(--border-hover);
+}
+
+.figure-card.selected {
+    border-color: #ffffff;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.4);
+}
+
+.figure-card img,
+.figure-card .figure-none {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: contain;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    color: var(--text-muted);
+}
+
+.figure-card span {
+    font-size: 10px;
+    color: var(--text-secondary);
+    text-align: center;
+    line-height: 1.25;
+}
+
+/* PHONE: EDIT PREVIEW */
+.phone-figure-layer {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    z-index: 3;
+    pointer-events: none;
+}
+
+.edit-preview-layer {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    z-index: 25;
+    background: #000000;
+    cursor: pointer;
+}
+
+.preview-loading-overlay {
+    position: absolute;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    z-index: 28;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    font-size: 10.5px;
+    color: #e5e5e5;
+    white-space: nowrap;
+    backdrop-filter: blur(6px);
+}
+
+.preview-loading-overlay .progress-spinner {
+    width: 12px;
+    height: 12px;
+    border-width: 2px;
+}
+
+.edit-preview-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.btn-preview-edit {
+    flex: 1;
+    padding: 9px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: rgba(255, 255, 255, 0.06);
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.btn-preview-edit:hover {
+    background: rgba(255, 255, 255, 0.12);
+}
+
+.btn-preview-edit:disabled {
+    opacity: 0.5;
+    cursor: wait;
+}
+
+.preview-auto-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.preview-edit-status {
+    margin: 8px 2px 0;
+    font-size: 10.5px;
+    line-height: 1.4;
+    color: var(--text-muted);
+    min-height: 15px;
+}
+
+.preview-edit-status.is-stale {
+    color: #d4af37;
+}
+
+.preview-edit-status.is-error {
+    color: #f87171;
 }
 
 .download-action-card {

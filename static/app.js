@@ -22,7 +22,10 @@ let state = {
     framingMode: "pitch_black",
     phrases: [],
     passageText: "",
-    watermark: ""
+    watermark: "",
+    editTemplate: "contemplative", // contemplative | slideshow | beat_montage
+    selectedFigure: null,
+    cutRhythm: "fast"
 };
 
 let musicPreviewAudio = new Audio();
@@ -67,6 +70,22 @@ const clipProgressLabel = document.getElementById("clipProgressLabel");
 const clipProgressMeta = document.getElementById("clipProgressMeta");
 const clipProgressTrack = document.getElementById("clipProgressTrack");
 const clipProgressFill = document.getElementById("clipProgressFill");
+
+// Edit templates & phone edit preview
+const editTemplateHint = document.getElementById("editTemplateHint");
+const montageOptionsBox = document.getElementById("montageOptionsBox");
+const framingModesBox = document.getElementById("framingModesBox");
+const frameStyleBox = document.getElementById("frameStyleBox");
+const multiSelectToolbar = document.getElementById("multiSelectToolbar");
+const figuresGrid = document.getElementById("figuresGrid");
+const chkFlash = document.getElementById("chkFlash");
+const previewFigure = document.getElementById("previewFigure");
+const editPreviewPlayer = document.getElementById("editPreviewPlayer");
+const previewLoadingOverlay = document.getElementById("previewLoadingOverlay");
+const previewLoadingText = document.getElementById("previewLoadingText");
+const btnPreviewEdit = document.getElementById("btnPreviewEdit");
+const chkAutoPreview = document.getElementById("chkAutoPreview");
+const previewEditStatus = document.getElementById("previewEditStatus");
 
 const btnTogglePassage = document.getElementById("btnTogglePassage");
 const passageContentArea = document.getElementById("passageContentArea");
@@ -124,6 +143,7 @@ async function init() {
     await loadPresets();
     await loadHistory();
     setupEventListeners();
+    setupEditPreview();
 
     // Default to Psalms 23 and Pitch Black framing (@nehzro)
     const phoneMockup = document.querySelector(".phone-mockup");
@@ -440,6 +460,7 @@ async function autoTranscribeCurrentSegment() {
         state.phrases = data.phrases || [];
         // Remember which clip these phrases belong to, so a render never burns subtitles of another range
         state.phrasesClip = { book: bookSelect.value, chapter: parseInt(chapterSelect.value), start, end };
+        schedulePreview();
         renderPhrasesList();
         updateSpokenScriptPreview();
         transcribeStatus.textContent = `${state.phrases.length} frases sincronizadas${data.cached ? " · instantáneo" : ""}`;
@@ -491,6 +512,7 @@ async function loadPresets() {
     try {
         const res = await fetch("/api/presets");
         const data = await res.json();
+        state.allVisuals = data.visuals;
 
         // Visuals
         visualsGrid.innerHTML = "";
@@ -520,6 +542,9 @@ async function loadPresets() {
             card.onclick = () => selectCollection(c, card);
             collectionsGrid.appendChild(card);
         });
+
+        // Foreground figures for the Jesus Edit
+        renderFigures(data.figures || []);
 
         // Music
         musicGrid.innerHTML = "";
@@ -693,7 +718,8 @@ function selectVisual(v, cardElement) {
 function updatePacingVisibility() {
     const pacingBox = document.getElementById("slideshowPacingContainer");
     if (!pacingBox) return;
-    const isMulti = state.isSlideshowMode || (state.isMultiSelect && state.selectedVisuals && state.selectedVisuals.length > 1);
+    // Slide pacing only applies to the Presentación template
+    const isMulti = state.editTemplate === "slideshow";
     if (isMulti) {
         pacingBox.classList.remove("hidden");
     } else {
@@ -1191,7 +1217,7 @@ function setupEventListeners() {
             state.subtitlePosition = btn.dataset.subPos || "bottom";
             const layer = document.querySelector(".phone-captions-layer");
             if (layer) {
-                layer.style.bottom = state.subtitlePosition === "center" ? "120px" : "32px";
+                layer.style.bottom = { top: "300px", center: "120px" }[state.subtitlePosition] || "32px";
             }
         });
     });
@@ -1420,23 +1446,11 @@ function formatSec(sec) {
 
 // 7. RENDER VIDEO HANDLER
 async function handleRenderVideo() {
-    const start = parseFloat(startSecInput.value) || 0;
-    const end = parseFloat(endSecInput.value) || 0;
-
-    if (end <= start) {
-        alert("El tiempo de fin debe ser mayor al de inicio.");
-        return;
-    }
-
-    let visualPayload;
-    if (state.isMultiSelect && state.selectedVisuals && state.selectedVisuals.length > 0) {
-        visualPayload = state.selectedVisuals.map(v => v.path);
-    } else if (state.isSlideshowMode && state.selectedCollection) {
-        visualPayload = state.selectedCollection.paths;
-    } else if (state.selectedVisual) {
-        visualPayload = state.selectedVisual.path;
-    } else {
-        alert("Por favor selecciona un fondo visual o colección.");
+    let payload;
+    try {
+        payload = buildRenderPayload();
+    } catch (e) {
+        alert(e.message);
         return;
     }
 
@@ -1448,31 +1462,6 @@ async function handleRenderVideo() {
     renderStatusText.textContent = "Mezclando audio de David Suchet y renderizando video 9:16...";
     if (renderStatusSub) renderStatusSub.textContent = "Renderizado con FFmpeg en alta resolución";
 
-    const payload = {
-        book: bookSelect.value,
-        chapter: parseInt(chapterSelect.value),
-        start_sec: start,
-        end_sec: end,
-        citation: citationInput.value.trim() || `${bookSelect.value} ${chapterSelect.value}`,
-        visual_paths: visualPayload,
-        music_path: state.selectedMusic ? state.selectedMusic.path : "",
-        music_volume: state.musicVolume,
-        subtitle_style: state.subtitleStyle,
-        subtitle_position: state.subtitlePosition || "bottom",
-        text_case: state.textCase || "original",
-        watermark: watermarkInput ? watermarkInput.value.trim() : "",
-        enable_subtitles: state.enableSubtitles && state.subtitleStyle !== "none",
-        corner_radius: state.cornerRadius,
-        slideshow_pacing: state.slideshowPacing || "cinematic",
-        framing_mode: state.framingMode || "pitch_black",
-        enable_particles: document.getElementById("chkParticles") ? document.getElementById("chkParticles").checked : true,
-        enable_light_leak: document.getElementById("chkLightLeak") ? document.getElementById("chkLightLeak").checked : true,
-        enable_dynamic_motion: document.getElementById("chkDynamicMotion") ? document.getElementById("chkDynamicMotion").checked : true,
-        enable_film_grain: document.getElementById("chkFilmGrain") ? document.getElementById("chkFilmGrain").checked : true,
-        // Phrases from the editor only if they were transcribed for exactly this clip;
-        // otherwise (still transcribing, range moved) the server syncs subtitles itself
-        phrases: phrasesMatchCurrentClip() ? state.phrases : null
-    };
 
     try {
         const res = await fetch("/api/render", {
@@ -1568,6 +1557,279 @@ async function waitForRenderJob(job) {
         failures = 0;
         job = await res.json();
     }
+}
+
+// 7b. EDIT TEMPLATES, FIGURES & PHONE EDIT PREVIEW
+const EDIT_TEMPLATE_HINTS = {
+    contemplative: "Elegí una obra: se anima con un acercamiento lento dentro del marco.",
+    slideshow: "Elegí una colección o activá la selección múltiple: las obras se suceden con fundidos suaves.",
+    beat_montage: "Las obras cortan al ritmo de la música con zoom de impacto y la figura queda adelante. Elegí 3 o más obras o una colección; si no, se usan todas."
+};
+
+function selectedVisualPaths() {
+    if (state.isMultiSelect && state.selectedVisuals && state.selectedVisuals.length > 0) {
+        return state.selectedVisuals.map(v => v.path);
+    }
+    if (state.isSlideshowMode && state.selectedCollection) return state.selectedCollection.paths;
+    if (state.selectedVisual) return state.selectedVisual.path;
+    return null;
+}
+
+// Request body shared by the final render and the phone preview
+function buildRenderPayload() {
+    const start = parseFloat(startSecInput.value) || 0;
+    const end = parseFloat(endSecInput.value) || 0;
+    if (!mainAudio.src) throw new Error("Cargá un capítulo primero.");
+    if (end <= start) throw new Error("El tiempo de fin debe ser mayor al de inicio.");
+
+    let visualPayload = selectedVisualPaths();
+    if (!visualPayload) throw new Error("Por favor seleccioná un fondo visual o colección.");
+    if (state.editTemplate === "contemplative" && Array.isArray(visualPayload)) visualPayload = visualPayload[0];
+    const montage = state.editTemplate === "beat_montage";
+    const checked = (id) => { const el = document.getElementById(id); return el ? el.checked : true; };
+
+    return {
+        book: bookSelect.value,
+        chapter: parseInt(chapterSelect.value),
+        start_sec: start,
+        end_sec: end,
+        citation: citationInput.value.trim() || `${bookSelect.value} ${chapterSelect.value}`,
+        visual_paths: visualPayload,
+        music_path: state.selectedMusic ? state.selectedMusic.path : "",
+        music_volume: state.musicVolume,
+        subtitle_style: state.subtitleStyle,
+        subtitle_position: state.subtitlePosition || "bottom",
+        text_case: state.textCase || "original",
+        watermark: watermarkInput ? watermarkInput.value.trim() : "",
+        enable_subtitles: state.enableSubtitles && state.subtitleStyle !== "none",
+        corner_radius: state.cornerRadius,
+        slideshow_pacing: state.slideshowPacing || "cinematic",
+        framing_mode: state.framingMode || "pitch_black",
+        enable_particles: checked("chkParticles"),
+        enable_light_leak: checked("chkLightLeak"),
+        enable_dynamic_motion: checked("chkDynamicMotion"),
+        enable_film_grain: checked("chkFilmGrain"),
+        // Phrases from the editor only if they were transcribed for exactly this clip;
+        // otherwise (still transcribing, range moved) the server syncs subtitles itself
+        phrases: phrasesMatchCurrentClip() ? state.phrases : null,
+        edit_template: montage ? "beat_montage" : "classic",
+        figure: montage && state.selectedFigure ? state.selectedFigure.path : null,
+        cut_rhythm: state.cutRhythm || "fast",
+        enable_flash: chkFlash ? chkFlash.checked : true,
+        frame_style: state.frameStyle || "vintage",
+        client_id: CLIENT_ID
+    };
+}
+
+function renderFigures(figureList) {
+    if (!figuresGrid) return;
+    figuresGrid.innerHTML = "";
+    const options = [...figureList, { id: "", name: "Sin figura (solo cortes)", path: null, url: null }];
+    options.forEach((f, idx) => {
+        const card = document.createElement("div");
+        card.className = "figure-card";
+        card.innerHTML = f.url
+            ? `<img src="${f.url}" alt="${escapeHtml(f.name)}" loading="lazy"><span>${escapeHtml(f.name)}</span>`
+            : `<div class="figure-none">∅</div><span>${escapeHtml(f.name)}</span>`;
+        card.onclick = () => selectFigure(f, card);
+        figuresGrid.appendChild(card);
+        if (idx === 0) selectFigure(f, card);
+    });
+}
+
+function selectFigure(figure, card) {
+    state.selectedFigure = figure.path ? figure : null;
+    document.querySelectorAll(".figure-card").forEach(c => c.classList.remove("selected"));
+    if (card) card.classList.add("selected");
+    updateStaticFigure();
+}
+
+function updateStaticFigure() {
+    const show = state.editTemplate === "beat_montage" && state.selectedFigure;
+    previewFigure.classList.toggle("hidden", !show);
+    if (!show) return;
+    previewFigure.src = state.selectedFigure.url;
+    // Don't show the figure over the very painting it was cut out of
+    if (state.selectedVisual && state.selectedVisual.id === state.selectedFigure.source) {
+        const background = (state.allVisuals || []).find(v => v.type === "image" && v.id !== state.selectedFigure.source);
+        if (background) previewImage.src = background.url;
+    }
+}
+
+function applyEditTemplate(template) {
+    state.editTemplate = template;
+    const montage = template === "beat_montage";
+    document.querySelectorAll(".edit-template-btn").forEach(b => b.classList.toggle("active", b.dataset.template === template));
+    editTemplateHint.textContent = EDIT_TEMPLATE_HINTS[template];
+
+    montageOptionsBox.classList.toggle("hidden", !montage);
+    framingModesBox.classList.toggle("hidden", montage);
+    frameStyleBox.classList.toggle("hidden", montage || state.framingMode === "fullscreen");
+    const radiusBox = document.getElementById("radiusSliderBox");
+    if (radiusBox) radiusBox.style.display = (montage || state.framingMode === "fullscreen") ? "none" : "block";
+    multiSelectToolbar.classList.toggle("hidden", template === "contemplative");
+    const collectionsTab = document.querySelector('.tab-btn[data-tab="slideshow"]');
+    if (collectionsTab) collectionsTab.classList.toggle("hidden", template === "contemplative");
+
+    if (template === "contemplative") {
+        if (chkMultiSelectVisuals && chkMultiSelectVisuals.checked) {
+            chkMultiSelectVisuals.checked = false;
+            chkMultiSelectVisuals.dispatchEvent(new Event("change"));
+        }
+        const singleTab = document.querySelector('.tab-btn[data-tab="single"]');
+        if (singleTab && !singleTab.classList.contains("active")) singleTab.click();
+        if (state.isSlideshowMode || !state.selectedVisual) {
+            const first = document.querySelector(".visual-item-card");
+            if (first) first.click();
+        }
+    } else if (template === "slideshow") {
+        const hasMulti = state.isMultiSelect && state.selectedVisuals && state.selectedVisuals.length > 1;
+        if (!hasMulti && !state.selectedCollection && collectionsTab) collectionsTab.click();
+    }
+
+    // With a figure in front, bottom subtitles would cover its face: move them up (and back when leaving)
+    if (montage && state.subtitlePosition === "bottom") {
+        state.autoTopSubtitles = true;
+        document.querySelector('[data-sub-pos="top"]').click();
+    } else if (!montage && state.autoTopSubtitles && state.subtitlePosition === "top") {
+        state.autoTopSubtitles = false;
+        document.querySelector('[data-sub-pos="bottom"]').click();
+    }
+
+    const mockup = document.querySelector(".phone-mockup");
+    if (mockup) {
+        mockup.classList.remove("framing-pitch_black", "framing-fullscreen", "framing-ambient");
+        mockup.classList.add(montage ? "framing-fullscreen" : `framing-${state.framingMode}`);
+    }
+    updatePacingVisibility();
+    updateStaticFigure();
+}
+
+let previewRequestSeq = 0;
+let previewTimer = null;
+
+function setPreviewStatus(text, kind = "") {
+    previewEditStatus.textContent = text;
+    previewEditStatus.classList.toggle("is-stale", kind === "stale");
+    previewEditStatus.classList.toggle("is-error", kind === "error");
+}
+
+// Any edit change: hide the outdated final video and (if Auto) regenerate the preview shortly after
+function schedulePreview() {
+    if (!chkAutoPreview) return;
+    if (!renderedVideoPlayer.classList.contains("hidden")) {
+        renderedVideoPlayer.pause();
+        renderedVideoPlayer.classList.add("hidden");
+    }
+    clearTimeout(previewTimer);
+    if (!chkAutoPreview.checked) {
+        setPreviewStatus("Hay cambios sin previsualizar: tocá ▶ Previsualizar edit.", "stale");
+        return;
+    }
+    previewTimer = setTimeout(() => requestEditPreview(true), 1200);
+}
+
+async function requestEditPreview(auto = false) {
+    clearTimeout(previewTimer);
+    const seq = ++previewRequestSeq;
+    let payload;
+    try {
+        payload = buildRenderPayload();
+    } catch (e) {
+        setPreviewStatus(e.message, auto ? "stale" : "error");
+        return;
+    }
+
+    previewLoadingOverlay.classList.remove("hidden");
+    previewLoadingText.textContent = "Generando vista previa…";
+    try {
+        const res = await fetch("/api/preview", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        let job = await res.json();
+        if (!res.ok || !job.success) throw new Error(job.detail || "No se pudo generar la vista previa");
+
+        while (!job.done) {
+            if (seq !== previewRequestSeq) return; // A newer preview took over
+            const label = RENDER_STAGE_LABELS[job.stage] || "Procesando";
+            const pct = Math.round(job.progress || 0);
+            previewLoadingText.textContent = `${label} · ${pct}%`;
+            setPreviewStatus(`Generando vista previa: ${label.toLowerCase()} · ${pct}%`);
+            await new Promise(resolve => setTimeout(resolve, 600));
+            const statusRes = await fetch(`/api/render_status?job_id=${encodeURIComponent(job.job_id)}`);
+            if (!statusRes.ok) throw new Error("La vista previa se interrumpió (¿se reinició el servidor?). Probá de nuevo.");
+            job = await statusRes.json();
+        }
+        if (seq !== previewRequestSeq || job.superseded) return;
+        if (job.stage === "error") throw new Error(job.error || "Error generando la vista previa");
+
+        mainAudio.pause();
+        editPreviewPlayer.src = job.video_url;
+        editPreviewPlayer.classList.remove("hidden");
+        editPreviewPlayer.muted = false;
+        try {
+            await editPreviewPlayer.play();
+            setPreviewStatus("Vista previa lista: es el edit real. Tocá el video para pausar.");
+        } catch (e) {
+            // Autoplay with sound needs a user gesture; play muted until the user taps
+            editPreviewPlayer.muted = true;
+            editPreviewPlayer.play().catch(() => {});
+            setPreviewStatus("Vista previa lista (sin sonido): tocá el video para escucharlo.");
+        }
+    } catch (e) {
+        if (seq === previewRequestSeq) setPreviewStatus(e.message, "error");
+    } finally {
+        if (seq === previewRequestSeq) previewLoadingOverlay.classList.add("hidden");
+    }
+}
+
+function setupEditPreview() {
+    document.querySelectorAll(".edit-template-btn").forEach(btn => {
+        btn.addEventListener("click", () => applyEditTemplate(btn.dataset.template));
+    });
+    document.querySelectorAll("[data-rhythm]").forEach(btn => {
+        btn.addEventListener("click", () => {
+            document.querySelectorAll("[data-rhythm]").forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+            state.cutRhythm = btn.dataset.rhythm;
+        });
+    });
+
+    btnPreviewEdit.addEventListener("click", () => requestEditPreview(false));
+    chkAutoPreview.addEventListener("change", () => { if (chkAutoPreview.checked) schedulePreview(); });
+    editPreviewPlayer.addEventListener("click", () => {
+        if (editPreviewPlayer.muted) {
+            editPreviewPlayer.muted = false;
+            editPreviewPlayer.play().catch(() => {});
+            setPreviewStatus("Vista previa lista: es el edit real. Tocá el video para pausar.");
+        } else if (editPreviewPlayer.paused) {
+            editPreviewPlayer.play().catch(() => {});
+        } else {
+            editPreviewPlayer.pause();
+        }
+    });
+    editPreviewPlayer.addEventListener("play", () => mainAudio.pause());
+
+    // One delegated listener: element handlers update the state first, then the preview follows
+    const pane = document.querySelector(".editor-pane");
+    const clickTargets = ".edit-template-btn, .figure-card, [data-rhythm], .visual-item-card, .collection-card, .tab-btn, " +
+        ".framing-mode-btn, .frame-style-btn, .pacing-btn, .style-option, [data-sub-pos], [data-text-case], .music-item-card";
+    pane.addEventListener("click", (e) => {
+        const target = e.target.closest(clickTargets);
+        if (!target) return;
+        if (target.matches(".framing-mode-btn")) applyEditTemplate(state.editTemplate);
+        schedulePreview();
+    });
+    pane.addEventListener("change", (e) => {
+        if (e.target.matches("input[type=checkbox], #radiusSlider, #volumeSlider")) schedulePreview();
+    });
+    pane.addEventListener("input", (e) => {
+        if (e.target.matches("#citationInput, #watermarkInput, .phrase-text-input")) schedulePreview();
+    });
+
+    applyEditTemplate(state.editTemplate);
 }
 
 // 8. HISTORY GALLERY
