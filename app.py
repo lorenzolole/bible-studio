@@ -1,8 +1,9 @@
-import json
 import os
 import shutil
 import time
+import uuid
 import logging
+import threading
 import subprocess
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse
@@ -13,6 +14,7 @@ from typing import List, Union, Optional
 import downloader
 import audio_engine
 import subtitles
+import transcripts
 import video_engine
 
 logging.basicConfig(level=logging.INFO)
@@ -44,23 +46,21 @@ app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 app.mount("/thumbnails", StaticFiles(directory=THUMBS_DIR), name="thumbnails")
 app.mount("/outputs", StaticFiles(directory=OUTPUTS_DIR), name="outputs")
 
-PRESETS_TRANS_PATH = os.path.join(ASSETS_DIR, "preset_transcriptions.json")
-PRESET_TRANSCRIPTIONS = {}
-if os.path.exists(PRESETS_TRANS_PATH):
-    try:
-        with open(PRESETS_TRANS_PATH, "r", encoding="utf-8") as f:
-            PRESET_TRANSCRIPTIONS = json.load(f)
-        logger.info(f"Loaded {len(PRESET_TRANSCRIPTIONS)} pre-calibrated transcriptions.")
-    except Exception as e:
-        logger.warning(f"Failed to load preset transcriptions: {e}")
-
 SESSION_TRANSCRIPTION_CACHE = {}
+
+# Latest /api/transcribe request per browser tab: queued Whisper work for a clip
+# the user already moved away from is skipped instead of run.
+LATEST_CLIP_REQUEST = {}
+
+# Endpoints run in FastAPI's threadpool; two concurrent 1080x1920 renders would exceed 512 MB.
+RENDER_LOCK = threading.Lock()
 
 class TranscribeRequest(BaseModel):
     book: str
     chapter: int
     start_sec: float
     end_sec: float
+    client_id: Optional[str] = None
 
 class RenderRequest(BaseModel):
     book: str
@@ -97,7 +97,7 @@ async def get_books():
     return {"books": downloader.BIBLE_BOOKS}
 
 @app.get("/api/chapter_info")
-async def get_chapter_info(book: str, chapter: int):
+def get_chapter_info(book: str, chapter: int):
     try:
         audio_info = downloader.download_audio_chapter(book, chapter)
         passage = downloader.fetch_passage_text(book, chapter)
@@ -117,97 +117,94 @@ async def get_chapter_info(book: str, chapter: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/chapter_transcription")
-async def get_chapter_transcription(book: str, chapter: int):
+def get_chapter_transcription(book: str, chapter: int):
     try:
         book_info = downloader.resolve_book(book)
         if not book_info:
             raise HTTPException(status_code=400, detail="Invalid book")
         osis = book_info["osis"]
-        raw_audio = os.path.join(CACHE_DIR, "audio", f"{osis}_{chapter}.mp3")
-        if not os.path.exists(raw_audio):
-            downloader.download_audio_chapter(book, chapter)
-        
-        json_path = f"{raw_audio}.json"
-        if not os.path.exists(json_path):
-            whisper_bin = subtitles.find_whisper_cli() or "whisper-cli"
-            cmd = [whisper_bin, "-m", subtitles.WHISPER_MODEL, "-f", raw_audio, "-oj", "-of", raw_audio, "--no-prints"]
-            try:
-                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception as err:
-                logger.warning(f"Chapter-wide whisper skipped or failed: {err}")
-            
-        if os.path.exists(json_path):
-            with open(json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            segments = data.get("transcription", [])
-            phrases = []
-            for seg in segments:
-                t_from = seg.get("timestamps", {}).get("from", "00:00:00,000")
-                t_to = seg.get("timestamps", {}).get("to", "00:00:00,000")
-                text = seg.get("text", "").strip()
-                if not text:
-                    continue
-                start_sec = subtitles.parse_whisper_time(t_from)
-                end_sec = subtitles.parse_whisper_time(t_to)
-                phrases.append({
-                    "start": round(start_sec, 2),
-                    "end": round(max(start_sec + 0.8, end_sec), 2),
-                    "text": text
-                })
-            return {"success": True, "phrases": phrases}
-        return {"success": True, "phrases": []}
+
+        words = transcripts.load_words(osis, chapter)
+        if words is None and transcripts.CHAPTER_WHISPER:
+            audio_info = downloader.download_audio_chapter(book, chapter)
+            words = transcripts.transcribe_chapter(osis, chapter, audio_info["local_path"])
+
+        if not words:
+            return {"success": True, "available": False, "phrases": []}
+        return {"success": True, "available": True, "phrases": subtitles.words_to_phrases(words, max_chars=90)}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting chapter transcription: {e}")
         return {"success": False, "phrases": [], "error": str(e)}
 
+def get_clip_phrases(book_info: dict, book: str, chapter: int, start_sec: float, end_sec: float,
+                     client_id: Optional[str] = None) -> tuple[list, str]:
+    """Timed phrases for a clip, relative to its start. Returns (phrases, source)."""
+    osis = book_info["osis"]
+    raw_audio = os.path.join(CACHE_DIR, "audio", f"{osis}_{chapter}.mp3")
+
+    # 1. Slice the chapter transcript (baked, or generated now where whole-chapter Whisper is fast)
+    words = transcripts.load_words(osis, chapter)
+    if words is None and transcripts.CHAPTER_WHISPER:
+        downloader.download_audio_chapter(book, chapter)
+        words = transcripts.transcribe_chapter(osis, chapter, raw_audio)
+    if words:
+        return transcripts.clip_phrases(words, start_sec, end_sec), "chapter"
+
+    cache_key = f"{osis}_{chapter}_{start_sec:.1f}_{end_sec:.1f}"
+    if cache_key in SESSION_TRANSCRIPTION_CACHE:
+        return SESSION_TRANSCRIPTION_CACHE[cache_key], "session"
+
+    # 2. Whisper just this clip; skip it if the same tab asked for another clip meanwhile
+    should_abort = None
+    if client_id:
+        token = object()
+        LATEST_CLIP_REQUEST[client_id] = token
+        should_abort = lambda: LATEST_CLIP_REQUEST.get(client_id) is not token
+
+    downloader.download_audio_chapter(book, chapter)
+    temp_voice = os.path.join(CACHE_DIR, f"transcribe_voice_{uuid.uuid4().hex}.mp3")
+    try:
+        audio_engine.trim_speech_audio(raw_audio, temp_voice, start_sec, end_sec, enhance_voice=False)
+        clip_words = subtitles.transcribe_words(temp_voice, should_abort=should_abort)
+    finally:
+        if os.path.exists(temp_voice):
+            os.remove(temp_voice)
+
+    if clip_words is None:
+        return [], "superseded"
+    clip_duration = max(1.0, end_sec - start_sec)
+    phrases = subtitles.words_to_phrases(clip_words, max_chars=26, clip_end=clip_duration)
+    if phrases:
+        SESSION_TRANSCRIPTION_CACHE[cache_key] = phrases
+        return phrases, "whisper"
+
+    # 3. No Whisper available: spread the official text proportionally over the clip
+    full_txt = downloader.fetch_passage_text(book, chapter).get("text", "")
+    if not full_txt:
+        return [], "none"
+    total_duration = audio_engine.get_audio_duration(raw_audio) or max(end_sec, 1.0)
+    ratio = max(0.0, min(1.0, start_sec / max(1.0, total_duration)))
+    text_words = full_txt.split()
+    start_idx = int(ratio * len(text_words))
+    num_words = max(8, int(clip_duration * 2.8))
+    txt = " ".join(text_words[start_idx:start_idx + num_words])
+    return subtitles.generate_timed_subtitles(txt, clip_duration), "estimate"
+
 @app.post("/api/transcribe")
-async def transcribe_audio_segment(req: TranscribeRequest):
+def transcribe_audio_segment(req: TranscribeRequest):
     try:
         book_info = downloader.resolve_book(req.book)
         if not book_info:
             raise HTTPException(status_code=400, detail="Invalid book")
-        osis = book_info["osis"]
-        
-        # 1. Instant return for pre-calibrated viral presets (0ms)
-        cache_key = f"{osis}_{req.chapter}_{req.start_sec:.1f}_{req.end_sec:.1f}"
-        if cache_key in PRESET_TRANSCRIPTIONS:
-            return {"success": True, "phrases": PRESET_TRANSCRIPTIONS[cache_key], "cached": True}
 
-        # 2. Instant return for session cached segments
-        if cache_key in SESSION_TRANSCRIPTION_CACHE:
-            return {"success": True, "phrases": SESSION_TRANSCRIPTION_CACHE[cache_key], "cached": True}
-
-        raw_audio = os.path.join(CACHE_DIR, "audio", f"{osis}_{req.chapter}.mp3")
-        if not os.path.exists(raw_audio):
-            downloader.download_audio_chapter(req.book, req.chapter)
-
-        timestamp = int(time.time() * 1000)
-        temp_voice = os.path.join(CACHE_DIR, f"transcribe_voice_{timestamp}.mp3")
-        audio_engine.trim_speech_audio(raw_audio, temp_voice, req.start_sec, req.end_sec, enhance_voice=False)
-
-        phrases = subtitles.transcribe_with_whisper(temp_voice, max_chars=26)
-        if not phrases:
-            # Fallback to chapter text aligned proportionally to the selected time range
-            passage = downloader.fetch_passage_text(req.book, req.chapter)
-            full_txt = passage.get("text", "")
-            if full_txt:
-                total_duration = audio_engine.get_audio_duration(raw_audio) or max(req.end_sec, 1.0)
-                ratio = max(0.0, min(1.0, req.start_sec / max(1.0, total_duration)))
-                words = full_txt.split()
-                start_idx = int(ratio * len(words))
-                segment_duration = max(1.0, req.end_sec - req.start_sec)
-                num_words = max(8, int(segment_duration * 2.8))
-                segment_words = words[start_idx : start_idx + num_words]
-                txt = " ".join(segment_words)
-                phrases = subtitles.generate_timed_subtitles(txt, segment_duration)
-
-        if os.path.exists(temp_voice):
-            os.remove(temp_voice)
-
-        if phrases:
-            SESSION_TRANSCRIPTION_CACHE[cache_key] = phrases
-
-        return {"success": True, "phrases": phrases}
+        phrases, source = get_clip_phrases(book_info, req.book, req.chapter, req.start_sec, req.end_sec, req.client_id)
+        if source == "superseded":
+            return {"success": False, "superseded": True, "phrases": []}
+        return {"success": True, "phrases": phrases, "source": source, "cached": source in ("chapter", "session")}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Transcription failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -477,7 +474,11 @@ async def upload_music(file: UploadFile = File(...)):
     }
 
 @app.post("/api/render")
-async def render_video(req: RenderRequest):
+def render_video(req: RenderRequest):
+    with RENDER_LOCK:
+        return _render_video(req)
+
+def _render_video(req: RenderRequest):
     try:
         book_info = downloader.resolve_book(req.book)
         if not book_info:
@@ -503,14 +504,14 @@ async def render_video(req: RenderRequest):
         english_citation = downloader.normalize_citation_english(req.citation)
 
         ass_path = None
+        timed_phrases = None
         if req.enable_subtitles and req.subtitle_style != "none":
             if req.phrases and len(req.phrases) > 0:
                 timed_phrases = req.phrases
+            elif req.custom_text:
+                timed_phrases = subtitles.generate_timed_subtitles(req.custom_text, clip_duration)
             else:
-                timed_phrases = subtitles.transcribe_with_whisper(trimmed_voice, max_chars=26)
-                if not timed_phrases:
-                    txt = req.custom_text or downloader.fetch_passage_text(req.book, req.chapter).get("text", "")
-                    timed_phrases = subtitles.generate_timed_subtitles(txt, clip_duration)
+                timed_phrases, _ = get_clip_phrases(book_info, req.book, req.chapter, req.start_sec, req.end_sec)
 
             ass_path = os.path.join(CACHE_DIR, f"sub_{osis}_{req.chapter}_{timestamp}.ass")
             subtitles.create_ass_subtitles(
@@ -606,7 +607,7 @@ def get_video_duration_fast(fpath):
         return ""
 
 @app.get("/api/videos")
-async def list_videos():
+def list_videos():
     vids = []
     # Collect all .mp4 files
     mp4_files = [f for f in os.listdir(OUTPUTS_DIR) if f.endswith(".mp4")]

@@ -4,6 +4,8 @@ import shutil
 import subprocess
 import json
 import logging
+import threading
+import uuid
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("subtitles")
@@ -12,6 +14,20 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 WHISPER_MODEL = os.path.join(MODELS_DIR, "ggml-base.en.bin")
 CACHE_DIR = os.path.join(BASE_DIR, "cache")
+
+# One whisper-cli process at a time: on a shared 0.1 vCPU two runs just starve each other.
+WHISPER_LOCK = threading.Lock()
+
+# DTW token alignment. Plain whisper.cpp token offsets drift up to ~1.7s from the
+# spoken word; DTW timestamps land within ~0.05s of the real onset.
+WHISPER_DTW = os.environ.get("WHISPER_DTW", "1") == "1"
+
+_SENTENCE_END = re.compile(r"[.;:!?][\"'”’)]*$")
+_CLAUSE_END = re.compile(r"[,—–][\"'”’)]*$")
+_OPENERS = "\"'“‘("
+# Words a subtitle line should not end on when it has to be cut mid-clause
+_WEAK_LINE_ENDINGS = {"a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "into", "his", "her",
+                      "my", "nor", "of", "on", "or", "our", "so", "that", "the", "their", "to", "who", "with", "your"}
 
 def find_whisper_cli() -> str | None:
     """Find whisper-cli binary in PATH or common macOS/Linux system directories."""
@@ -51,102 +67,185 @@ def format_ass_time(seconds: float) -> str:
         cs = 99
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
-def transcribe_with_whisper(audio_file: str, max_chars: int = 24) -> list[dict]:
+def _dtw_preset() -> str:
+    """DTW alignment preset matching the model file, e.g. ggml-base.en.bin -> base.en"""
+    name = os.path.basename(WHISPER_MODEL)
+    if name.startswith("ggml-") and name.endswith(".bin"):
+        return name[len("ggml-"):-len(".bin")]
+    return "base.en"
+
+def words_from_whisper_json(data: dict, duration: float | None = None) -> list[list]:
     """
-    Run local Metal-accelerated whisper-cli on audio file to obtain
-    exact spoken timestamps down to short 3-5 word phrases.
-    Returns list of dicts: [{'start': float, 'end': float, 'text': str}]
+    Build [[word, start, end], ...] from whisper-cli full JSON (-ojf) tokens.
+    Start is the DTW onset when available; end is estimated from word length,
+    never running past the next word's onset.
+    """
+    words = []
+    for seg in data.get("transcription", []):
+        for tok in seg.get("tokens", []):
+            text = tok.get("text", "")
+            if not text.strip() or text.startswith("[_"):
+                continue
+            t_dtw = tok.get("t_dtw", -1)
+            if t_dtw is not None and t_dtw >= 0:
+                start = t_dtw / 100.0
+            else:
+                start = tok.get("offsets", {}).get("from", 0) / 1000.0
+            # Tokens with a leading space start a new word; the rest are sub-word pieces
+            if text.startswith(" ") or not words:
+                words.append([text.strip(), start, 0.0])
+            else:
+                words[-1][0] += text
+
+    # Drop non-speech annotations like [BLANK_AUDIO] or (music)
+    words = [w for w in words if not re.fullmatch(r"\W*[\[\(].*[\]\)]\W*", w[0])]
+
+    # Attach standalone punctuation: opening quotes to the next word, the rest to the previous one
+    merged = []
+    prefix = ""
+    for w in words:
+        if not re.search(r"\w", w[0]):
+            if w[0][0] in _OPENERS:
+                prefix += w[0]
+            elif merged:
+                merged[-1][0] += w[0]
+            continue
+        if prefix:
+            w[0] = prefix + w[0]
+            prefix = ""
+        merged.append(w)
+
+    for i, w in enumerate(merged):
+        if i and w[1] < merged[i - 1][1]:
+            w[1] = merged[i - 1][1]
+    for i, w in enumerate(merged):
+        if i + 1 < len(merged):
+            limit = merged[i + 1][1]
+        else:
+            limit = duration if duration else float("inf")
+        w[2] = round(max(w[1] + 0.05, min(w[1] + 0.12 + 0.07 * len(w[0]), limit)), 2)
+    for w in merged:
+        w[1] = round(w[1], 2)
+    return merged
+
+def transcribe_words(audio_file: str, should_abort=None) -> list[list] | None:
+    """
+    Run whisper-cli on an audio file and return word-level timestamps
+    [[word, start, end], ...]. Returns None when should_abort() says the
+    request was superseded while it waited for the Whisper lock.
     """
     whisper_cli = find_whisper_cli()
     if not (whisper_cli and os.path.exists(whisper_cli) and os.path.exists(WHISPER_MODEL)):
         logger.warning(f"Whisper CLI ({whisper_cli}) or model ({WHISPER_MODEL}) not found, falling back to text estimation")
         return []
 
-    temp_out_base = os.path.join(CACHE_DIR, f"whisper_{abs(hash(audio_file)) % 1000000}")
-    temp_wav = f"{temp_out_base}.wav"
-    temp_json = f"{temp_out_base}.json"
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    out_base = os.path.join(CACHE_DIR, f"whisper_{uuid.uuid4().hex}")
+    temp_wav = f"{out_base}.wav"
+    temp_json = f"{out_base}.json"
 
-    # Convert audio segment to 16kHz mono WAV for fast, native whisper.cpp processing
-    wav_target = audio_file
     try:
-        conv_cmd = [
+        # 16kHz mono WAV is whisper.cpp's native input
+        subprocess.run([
             "ffmpeg", "-y", "-i", audio_file,
             "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
             temp_wav
-        ]
-        subprocess.run(conv_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if os.path.exists(temp_wav):
-            wav_target = temp_wav
-    except Exception as conv_err:
-        logger.warning(f"WAV pre-conversion failed ({conv_err}), falling back to direct audio")
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        duration = max(0.0, (os.path.getsize(temp_wav) - 44) / 32000.0)
 
-    threads = os.environ.get("WHISPER_THREADS", "2")
+        threads = os.environ.get("WHISPER_THREADS", "2")
+        base_cmd = [whisper_cli, "-m", WHISPER_MODEL, "-f", temp_wav, "-t", threads,
+                    "-ojf", "-of", out_base, "--no-prints"]
+        attempts = [base_cmd]
+        if WHISPER_DTW:
+            # DTW is incompatible with flash attention; retry without DTW if this build rejects it
+            attempts.insert(0, base_cmd + ["-dtw", _dtw_preset(), "-nfa"])
 
-    cmd = [
-        whisper_cli,
-        "-m", WHISPER_MODEL,
-        "-f", wav_target,
-        "-t", threads,
-        "-ml", str(max_chars),
-        "-sow",
-        "-oj",
-        "-of", temp_out_base,
-        "--no-prints"
-    ]
+        with WHISPER_LOCK:
+            if should_abort and should_abort():
+                return None
+            for cmd in attempts:
+                try:
+                    logger.info(f"Running Whisper on {audio_file} ({duration:.1f}s, threads={threads}, dtw={'-dtw' in cmd})...")
+                    subprocess.run(cmd, check=True, capture_output=True, text=True)
+                    break
+                except subprocess.CalledProcessError as e:
+                    logger.warning(f"whisper-cli failed (exit {e.returncode}): {(e.stderr or '')[-300:]}")
 
-    try:
-        logger.info(f"Running Whisper transcription on {wav_target} (threads={threads})...")
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        
         if not os.path.exists(temp_json):
             logger.warning(f"Whisper JSON output missing: {temp_json}")
             return []
 
-        with open(temp_json, "r", encoding="utf-8") as f:
+        with open(temp_json, "r", encoding="utf-8", errors="replace") as f:
             data = json.load(f)
+        words = words_from_whisper_json(data, duration)
+        logger.info(f"Whisper transcribed {len(words)} words.")
+        return words
 
-        segments = data.get("transcription", [])
-        timed_phrases = []
-
-        for seg in segments:
-            t_from = seg.get("timestamps", {}).get("from", "00:00:00,000")
-            t_to = seg.get("timestamps", {}).get("to", "00:00:00,000")
-            text = seg.get("text", "").strip()
-            
-            # Clean text
-            text = re.sub(r'\[.*?\]', '', text).strip()
-            if not text:
-                continue
-
-            start_sec = parse_whisper_time(t_from)
-            end_sec = parse_whisper_time(t_to)
-
-            timed_phrases.append({
-                "start": round(start_sec, 2),
-                "end": round(max(start_sec + 0.8, end_sec), 2),
-                "text": text
-            })
-
-        logger.info(f"Whisper transcribed {len(timed_phrases)} phrases successfully.")
-        return timed_phrases
-
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Whisper process error (exit code {e.returncode}): {e.stderr}")
-        return []
     except Exception as e:
         logger.error(f"Error during whisper transcription: {e}")
         return []
     finally:
-        if os.path.exists(temp_wav):
-            try:
-                os.remove(temp_wav)
-            except Exception:
-                pass
-        if os.path.exists(temp_json):
-            try:
-                os.remove(temp_json)
-            except Exception:
-                pass
+        for path in (temp_wav, temp_json):
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+
+def words_to_phrases(words: list[list], max_chars: int = 26, clip_end: float | None = None) -> list[dict]:
+    """
+    Group timed words into subtitle phrases of at most max_chars, breaking at
+    sentence ends, at clauses once the line is reasonably full, and at long pauses.
+    Each phrase stays on screen until the next one starts (max 1.5s after its last word).
+    """
+    def text_of(ws):
+        return " ".join(w[0] for w in ws)
+
+    groups, cur = [], []
+    for w in words:
+        if cur and w[1] - cur[-1][2] > 0.8 and len(text_of(cur)) >= 8:
+            groups.append(cur)
+            cur = []
+        while cur and len(text_of(cur)) + 1 + len(w[0]) > max_chars:
+            # Prefer breaking after the last punctuation in the line over a mid-clause cut
+            cut = len(cur)
+            for k in range(len(cur) - 1, -1, -1):
+                ends_clause = _SENTENCE_END.search(cur[k][0]) or _CLAUSE_END.search(cur[k][0])
+                if ends_clause and len(text_of(cur[:k + 1])) >= 8:
+                    cut = k + 1
+                    break
+            else:
+                # No punctuation: carry dangling words ("and", "the", "in"...) over to the next line
+                while cut > 2 and cur[cut - 1][0].lower() in _WEAK_LINE_ENDINGS:
+                    cut -= 1
+            groups.append(cur[:cut])
+            cur = cur[cut:]
+        cur.append(w)
+        if _SENTENCE_END.search(w[0]) or (_CLAUSE_END.search(w[0]) and len(text_of(cur)) >= max_chars * 0.45):
+            groups.append(cur)
+            cur = []
+    if cur:
+        groups.append(cur)
+
+    phrases = []
+    for i, g in enumerate(groups):
+        start = g[0][1]
+        end = max(g[-1][2] + 1.5, start + 0.8)
+        if i + 1 < len(groups):
+            end = min(end, groups[i + 1][0][1])
+        if clip_end is not None:
+            end = min(end, clip_end)
+        phrases.append({
+            "start": round(start, 2),
+            "end": round(max(end, start + 0.1), 2),
+            "text": text_of(g)
+        })
+    return phrases
+
+def transcribe_with_whisper(audio_file: str, max_chars: int = 24) -> list[dict]:
+    """Whisper an audio file into subtitle phrases: [{'start', 'end', 'text'}]"""
+    return words_to_phrases(transcribe_words(audio_file) or [], max_chars=max_chars)
 
 def split_text_into_phrases(text: str, max_words: int = 5) -> list[str]:
     """Split text into short natural phrases."""

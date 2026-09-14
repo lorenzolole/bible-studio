@@ -257,7 +257,7 @@ async function loadChapterTranscript(bookOsis, chapter) {
             currentChapterPhrases = data.phrases;
             renderInteractivePhrases(currentChapterPhrases);
         } else {
-            passagePhrasesInteractive.innerHTML = `<div class="p-2 text-muted text-xs">Marcas de tiempo completas en proceso...</div>`;
+            passagePhrasesInteractive.innerHTML = `<div class="p-2 text-muted text-xs">Marcas de tiempo no disponibles para este capítulo.</div>`;
         }
     } catch (e) {
         console.warn("Could not load chapter transcription:", e);
@@ -275,7 +275,7 @@ function renderInteractivePhrases(phrases) {
         const row = document.createElement("div");
         row.className = "passage-phrase-row";
         row.innerHTML = `
-            <span>${p.text}</span>
+            <span>${escapeHtml(p.text)}</span>
             <span class="passage-phrase-time">${formatSec(p.start)} - ${formatSec(p.end)}</span>
         `;
         row.onclick = () => {
@@ -295,6 +295,18 @@ function renderInteractivePhrases(phrases) {
 // 4. SUBTITLES & AI WHISPER TRANSCRIPTION
 let transcribeDebounceTimer = null;
 let transcribeAbortController = null;
+
+// Identifies this tab so the server can skip queued Whisper work for clips we already moved away from
+const CLIENT_ID = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+function escapeHtml(text) {
+    return String(text ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
 
 function scheduleSegmentTranscribe(delay = 500) {
     if (transcribeDebounceTimer) clearTimeout(transcribeDebounceTimer);
@@ -354,17 +366,19 @@ async function autoTranscribeCurrentSegment() {
                 book: bookSelect.value,
                 chapter: parseInt(chapterSelect.value),
                 start_sec: start,
-                end_sec: end
+                end_sec: end,
+                client_id: CLIENT_ID
             })
         });
 
         const data = await res.json();
+        if (data.superseded) return; // A newer clip request from this tab replaced it
         if (!data.success) throw new Error("Error en transcripción");
 
         state.phrases = data.phrases || [];
         renderPhrasesList();
         updateSpokenScriptPreview();
-        transcribeStatus.textContent = `${state.phrases.length} frases sincronizadas`;
+        transcribeStatus.textContent = `${state.phrases.length} frases sincronizadas${data.source === "chapter" ? " · instantáneo" : ""}`;
         
         if (state.phrases.length > 0) {
             previewCaptionText.textContent = state.phrases[0].text;
@@ -395,7 +409,7 @@ function renderPhrasesList() {
         row.className = "phrase-row-item";
         row.innerHTML = `
             <span class="phrase-timestamp">${p.start.toFixed(1)}s - ${p.end.toFixed(1)}s</span>
-            <input type="text" class="phrase-text-input" value="${p.text}">
+            <input type="text" class="phrase-text-input" value="${escapeHtml(p.text)}">
         `;
         const input = row.querySelector(".phrase-text-input");
         input.addEventListener("input", (e) => {

@@ -2,6 +2,24 @@
 
 Todos los cambios notables de este proyecto se documentarán en este archivo siguiendo el formato [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
+## [3.2.0] - 2026-09-14
+
+### Agregado
+- **Transcripciones por capítulo palabra por palabra (`transcripts.py`)**: cada capítulo se transcribe una vez y cualquier clip se sirve recortando sus palabras; mover el timeline ya no ejecuta Whisper (~1 ms por pedido).
+- **~125 capítulos populares horneados en `assets/transcripts/`** con `bake_transcripts.py` (Whisper con Metal en la Mac). Sobreviven a los reinicios de Render y reemplazan a `assets/preset_transcriptions.json`.
+- **Timestamps DTW** (`-ojf -dtw base.en -nfa`): error medido ~0.05s contra ~1.7s de los offsets normales de whisper.cpp.
+- **Frases cortadas por puntuación** (`words_to_phrases`), sin dejar palabras sueltas como "and" o "the" al final de línea.
+- Variables de entorno `CHAPTER_WHISPER`, `WHISPER_DTW` y `WHISPER_THREADS`.
+
+### Corregido
+- Render con subtítulos apagados fallaba (`timed_phrases` sin definir).
+- Frases con comillas (ej. Salmo 23) aparecían vacías o cortadas en el editor: escape HTML en `app.js`.
+- El scraper truncaba versículos con spans anidados (small-caps "LORD", palabras de Jesús): Génesis 2 devolvía la mitad del texto.
+- El servidor quedaba bloqueado mientras corría Whisper o un render (endpoints `async` con subprocess bloqueante): ahora corren en threadpool, con un solo Whisper y un solo render a la vez.
+- Al cargar un capítulo corrían dos Whisper en paralelo (clip + capítulo sin límite de hilos); en Docker el de capítulo queda desactivado y los pedidos viejos de la misma pestaña se descartan de la cola.
+
+---
+
 ## [3.1.0] - 2026-09-14
 
 ### Agregado

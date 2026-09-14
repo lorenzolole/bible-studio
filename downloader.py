@@ -200,7 +200,16 @@ def fetch_passage_text(book_str: str, chapter: int) -> dict:
         clean_html = re.sub(r'<span class="chapternum"[^>]*>.*?</span>', '', clean_html, flags=re.DOTALL)
         clean_html = re.sub(r'<sup class="versenum"[^>]*>.*?</sup>', '', clean_html, flags=re.DOTALL)
         clean_html = re.sub(r'<h[1-6][^>]*>.*?</h[1-6]>', '', clean_html, flags=re.DOTALL)
-        
+
+        # Unwrap spans nested inside verse text (small-caps "Lord", red-letter "woj"), innermost first;
+        # otherwise the verse regex below stops at the first inner </span> and truncates the verse
+        inner_span = re.compile(r'<span(?![^>]*class="text )[^>]*>((?:(?!<span).)*?)</span>', flags=re.DOTALL)
+        while True:
+            unwrapped = inner_span.sub(r'\1', clean_html)
+            if unwrapped == clean_html:
+                break
+            clean_html = unwrapped
+
         spans = re.findall(r'<span[^>]*class="text [^"]*"[^>]*>(.*?)</span>', clean_html, flags=re.DOTALL)
         texts = []
         for s in spans:

@@ -6,7 +6,7 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
 
 ## 📌 Contexto Rápido & Enlaces Oficiales
 
-- **Nombre del Proyecto**: Bible Studio *(v3.1.0 — renombrado desde TikTok Bible Studio)*.
+- **Nombre del Proyecto**: Bible Studio *(v3.2.0 — renombrado desde TikTok Bible Studio)*.
 - **Repositorio Oficial en GitHub**: [https://github.com/lorenzolole/bible-studio](https://github.com/lorenzolole/bible-studio)
   - **Cuenta GitHub Activa**: `lorenzolole`
   - **Rama Principal**: `main`
@@ -51,17 +51,19 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
 
 ## 📁 Estructura del Repositorio
 
-- `app.py`: Servidor FastAPI, endpoints REST (`/api/books`, `/api/chapter_info`, `/api/chapter_transcription`, `/api/transcribe`, `/api/render`, `/api/presets`, `/api/videos`). Implementa `SESSION_TRANSCRIPTION_CACHE` y `PRESET_TRANSCRIPTIONS`.
-- `downloader.py`: Motor de scraping y descarga de audio de David Suchet y texto bíblico de BibleGateway. Limpieza de encabezados HTML (`<h1-h6>`), notas al pie y entidades `&nbsp;`.
+- `app.py`: Servidor FastAPI, endpoints REST (`/api/books`, `/api/chapter_info`, `/api/chapter_transcription`, `/api/transcribe`, `/api/render`, `/api/presets`, `/api/videos`). `get_clip_phrases()` resuelve los subtítulos de un clip: transcripción del capítulo → `SESSION_TRANSCRIPTION_CACHE` → Whisper del clip → estimación por texto. Los endpoints pesados son `def` (threadpool) y el render está serializado con `RENDER_LOCK`.
+- `transcripts.py`: Transcripciones palabra por palabra por capítulo. Se transcribe el capítulo una vez y cada clip se sirve recortando palabras (0 Whisper al mover el timeline). Lee `assets/transcripts/` (horneadas) y `cache/transcripts/` (runtime).
+- `bake_transcripts.py`: Hornea transcripciones de capítulos populares en la Mac (Metal) para commitearlas: `WHISPER_THREADS=8 python3 bake_transcripts.py [LIBRO CAP ...] [--force]`.
+- `downloader.py`: Motor de scraping y descarga de audio de David Suchet y texto bíblico de BibleGateway. Limpieza de encabezados HTML (`<h1-h6>`), notas al pie, spans anidados (small-caps "LORD", palabras de Jesús) y entidades `&nbsp;`.
 - `audio_engine.py`: Recorte de audio con `ffmpeg`, compresión vocal broadcast y mezcla con música duckeada.
-- `subtitles.py`: Descubrimiento dinámico de `whisper-cli`, conversión a WAV 16kHz mono para whisper, y formateo de subtítulos `.ass`.
+- `subtitles.py`: Descubrimiento de `whisper-cli`, `transcribe_words()` (WAV 16kHz + JSON completo + timestamps DTW, un Whisper a la vez con `WHISPER_LOCK`), `words_to_phrases()` (agrupa palabras en frases cortando por puntuación) y formateo de subtítulos `.ass`.
 - `video_engine.py`: Motor de composición de video vertical 1080×1920 con control de hilos (`-threads 2`) y preset (`veryfast`) para no exceder 512 MB RAM.
 - `create_clip.py`: Interfaz de línea de comandos (CLI) para generación por lotes.
 - `generate_overlays.py`: Generador autónomo de las capas de polvo celestial y fuga de luz.
 - `static/app.js`: Lógica del cliente, scrubber del timeline, snapping interactivo, e integración de `AbortController` para evitar condiciones de carrera.
 - `static/style.css`: Estilos de la aplicación.
 - `templates/index.html`: Plantilla principal del estudio web.
-- `assets/preset_transcriptions.json`: Base de datos pre-calibrada con marcas de tiempo exactas para los pasajes virales.
+- `assets/transcripts/`: Transcripciones horneadas (`{osis}_{cap}.json`, formato `{"version":1,"words":[[palabra, inicio, fin], ...]}`) de ~125 capítulos populares, incluidos los pasajes virales.
 - `assets/`: Biblioteca de música (`music/`), arte sacro (`visuals/`), miniaturas (`thumbnails/`) y overlays (`overlays/`).
 - `Dockerfile`: Multi-stage build (compila `whisper.cpp` estático sin dependencias dinámicas, instala FFmpeg y descarga `ggml-base.en.bin`).
 - `requirements.txt`: Dependencias Python (`fastapi`, `uvicorn`, `Pillow`, `numpy`, `pydantic`, `python-multipart`).
@@ -69,15 +71,22 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
 
 ---
 
-## ⚡ Cambios Recientes Realizados (v3.1.0)
+## ⚡ Cambios Recientes Realizados (v3.2.0)
+
+1. **Transcripción por capítulo + recorte por clip**: `/api/transcribe` ya no corre Whisper cuando el capítulo tiene transcripción; recorta las palabras del rango (~1 ms). Reemplaza a `assets/preset_transcriptions.json`.
+2. **Timestamps DTW**: `whisper-cli -ojf -dtw base.en -nfa`. Los offsets normales de whisper.cpp se corrían hasta 1.7s; con DTW el error medido es ~0.05s. Si el binario rechaza los flags, reintenta sin DTW (`WHISPER_DTW=0` lo desactiva).
+3. **Variables de entorno**: `CHAPTER_WHISPER` (default `1`; el `Dockerfile` pone `0` porque en 0.1 vCPU un capítulo entero tarda minutos → en Render los capítulos no horneados usan Whisper solo del clip), `WHISPER_THREADS` (default `2`), `WHISPER_DTW` (default `1`).
+4. **Cola de Whisper**: un solo proceso a la vez; si la misma pestaña (`client_id`) pidió otro clip mientras esperaba, el pedido viejo se descarta (`superseded`).
+5. **Bugs corregidos**: render con subtítulos apagados (`timed_phrases` sin definir), comillas rompiendo el editor de frases (escape HTML en `app.js`), versículos truncados por spans anidados en el scraper.
+
+### v3.1.0
 
 1. **Despliegue a Producción en Render**:
    - El proyecto está desplegado y funcionando en `https://bible-studio.onrender.com`.
    - Se configuró el puerto dinámico `PORT` en `Dockerfile` y `app.py`.
 2. **Compilación Estática de Whisper**:
    - Se corrigió el error `exit status 127` en Linux compilando `whisper-cli` con `-DBUILD_SHARED_LIBS=OFF`.
-3. **Caché Instantánea de Pasajes Virales (0.05s)**:
-   - Se pre-calcularon los 7 pasajes virales clave en `assets/preset_transcriptions.json`. Al pulsar los botones rápidos en producción, responden al instante sin consumir CPU.
+3. **Caché Instantánea de Pasajes Virales (0.05s)** *(reemplazada en v3.2.0 por `assets/transcripts/`)*.
 4. **Prevención de Condiciones de Carrera (`AbortController`)**:
    - En `static/app.js`, cualquier nuevo clic o movimiento de slider aborta peticiones anteriores en curso, evitando que textos viejos sobrescriban la selección actual.
 5. **Limpieza de Títulos y Entidades HTML**:
@@ -89,9 +98,10 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
 
 ## 🎯 Puntos de Atención & Próximos Pasos para Claude Code
 
-1. **Capítulos Nuevos No Cacheados en la Nube (CPU Throttling)**:
-   - Los pasajes virales pre-cacheados cargan en 0.05s. Sin embargo, si un usuario selecciona un libro/capítulo nuevo no cacheado (ej. *Levítico 15*), la descarga del MP3 de BibleGateway y la posterior transcripción en el CPU compartido (0.1 vCPU) de Render puede tardar entre 25 y 45 segundos.
-   - *Mejora sugerida*: Pre-cachear más capítulos populares en `assets/preset_transcriptions.json`, o mostrar un spinner de progreso más detallado en la UI mientras se procesa un capítulo frío.
+1. **Capítulos No Horneados en la Nube (CPU Throttling)**:
+   - Los capítulos de `assets/transcripts/` responden al instante. Un capítulo no horneado (ej. *Levítico 15*) en Render sigue necesitando Whisper por clip en 0.1 vCPU, y el lector de capítulo no muestra marcas de tiempo.
+   - *Para sumar capítulos*: agregarlos a `POPULAR_CHAPTERS` en `bake_transcripts.py` (o pasarlos por argumento), correrlo en la Mac y commitear los JSON.
+   - *Pendiente*: indicador de progreso por etapas en la UI, alinear palabras de Whisper con el texto oficial NIV-UK (corrige nombres mal oídos, ej. "Curia Thaba" por "Kiriath Arba"), recalibrar los rangos de los botones virales usando las palabras horneadas (Proverbios 3 e Isaías 41 arrancan con la cola del versículo anterior).
 2. **Renderizado de Video en la Nube vs Local**:
    - En la Mac local (Apple M4), FFmpeg renderiza el video en 4 segundos usando aceleración por hardware Metal/VideoToolbox.
    - En Render (0.1 vCPU), el renderizado es por software puro libx264. Asegurarse de mantener los hilos bajos y los presets rápidos.
