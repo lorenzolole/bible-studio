@@ -20,6 +20,8 @@ Todos los cambios notables de este proyecto se documentarán en este archivo sig
 
 ### Cambiado
 - Pantalla completa: las franjas oscuras de borde duro pasan a ser una viñeta con degradé suave.
+- En el preview estático del Jesus Edit, la figura ya no se superpone a la misma obra de la que fue recortada.
+- `AGENTS.md`: punto de entrada para Codex (remite a `CLAUDE.md`).
 
 ---
 

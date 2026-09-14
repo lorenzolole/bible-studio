@@ -136,13 +136,18 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
    - En la Mac un clip de ~10s se renderiza en 5–15s. En Render (0.1 vCPU, libx264 por software) tarda minutos; por eso el render es un job con progreso.
    - Memoria: cualquier cambio en `video_engine.py` hay que medirlo (`/usr/bin/time -l ffmpeg ...` en la Mac o `docker run --memory=512m`). El techo real es ~512 MB **incluyendo** Python.
    - Los videos en `outputs/` se pierden cuando Render reinicia el contenedor: la UI avisa que hay que descargarlos.
-3. **Uso principal: local** (decisión 2026-09-14: proyecto personal; Render gratis queda secundario porque renderiza lento y avisa por memoria). En la Mac `CHAPTER_WHISPER=1` transcribe capítulos nuevos enteros en ~10s y los guarda alineados en `cache/transcripts/`.
-4. **Comandos para Correr en Local**:
+3. **Jesus Edit — próximos pasos** (el desarrollo sigue con Codex; ver `AGENTS.md`):
+   - Generar los assets con `docs/CODEX_PROMPTS.md`: 8 figuras PNG con transparencia en `assets/figures/` y 16 obras de fondo 9:16 en `assets/visuals/` + colección. La app los detecta sola.
+   - Ideas de edición todavía no implementadas: zoom de la figura en cada golpe fuerte, temblor de cámara en los flashes, texto palabra por palabra al estilo TikTok y más plantillas (por ejemplo cortes en blanco y negro con acentos dorados).
+   - El render final del Jesus Edit mide ~354 MB en la Mac (`FFMPEG_THREADS=2`). **No se re-probó en Docker con `--memory=512m`**: hacerlo antes de depender de Render.
+   - Preview: ~7–9s en la Mac para 15s. Si hace falta más velocidad, el siguiente paso es componer el preview a 15 fps.
+4. **Uso principal: local** (decisión 2026-09-14: proyecto personal; Render gratis queda secundario porque renderiza lento y avisa por memoria). En la Mac `CHAPTER_WHISPER=1` transcribe capítulos nuevos enteros en ~10s y los guarda alineados en `cache/transcripts/`.
+5. **Comandos para Correr en Local**:
    ```bash
    cd /Users/lolescaldaferro/Antigravity/TikTokBible
    ./run.sh
    ```
-5. **Comando para Desplegar a Producción**:
+6. **Comando para Desplegar a Producción**:
    ```bash
    git add .
    git commit -m "tu mensaje"
