@@ -14,9 +14,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
+# GGML_NATIVE=OFF: the build host's CPU (e.g. AVX-512) differs from the runtime host, and a
+# -march=native binary dies with SIGILL on the first transcription. Target portable AVX2 instead.
 RUN git clone --depth 1 https://github.com/ggerganov/whisper.cpp.git && \
     cd whisper.cpp && \
-    cmake -B build -DWHISPER_BUILD_EXAMPLES=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release && \
+    cmake -B build -DWHISPER_BUILD_EXAMPLES=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release \
+        -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON && \
     cmake --build build --config Release -j$(nproc) --target whisper-cli && \
     mkdir -p /dist/bin /dist/lib && \
     cp build/bin/whisper-cli /dist/bin/ && \

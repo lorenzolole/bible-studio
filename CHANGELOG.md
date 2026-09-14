@@ -12,6 +12,7 @@ Todos los cambios notables de este proyecto se documentarán en este archivo sig
 - Variables de entorno `CHAPTER_WHISPER`, `WHISPER_DTW` y `WHISPER_THREADS`.
 - `GET /api/health`: muestra si el contenedor tiene `whisper-cli`, el modelo, soporte DTW y cuántas transcripciones horneadas carga.
 - El reintento sin DTW se decide por la existencia del JSON y no por el exit code (`whisper-cli` sale con 0 ante flags desconocidos).
+- **Whisper en Render moría con SIGILL (exit -4)**: `whisper-cli` se compilaba con `GGML_NATIVE=ON` (instrucciones de la CPU del build) y el host de ejecución no las soporta; los clips no horneados caían siempre en la estimación por texto. Ahora se compila con `GGML_NATIVE=OFF` + AVX2.
 
 ### Corregido
 - Render con subtítulos apagados fallaba (`timed_phrases` sin definir).

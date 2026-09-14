@@ -87,6 +87,7 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
    - Se configuró el puerto dinámico `PORT` en `Dockerfile` y `app.py`.
 2. **Compilación Estática de Whisper**:
    - Se corrigió el error `exit status 127` en Linux compilando `whisper-cli` con `-DBUILD_SHARED_LIBS=OFF`.
+   - v3.2.0: también `-DGGML_NATIVE=OFF` + AVX2. Con `NATIVE=ON` el binario usaba instrucciones de la CPU del build y moría con SIGILL (exit -4) en el host de Render. Si vuelve a pasar, `/api/health` → `last_whisper_error`.
 3. **Caché Instantánea de Pasajes Virales (0.05s)** *(reemplazada en v3.2.0 por `assets/transcripts/`)*.
 4. **Prevención de Condiciones de Carrera (`AbortController`)**:
    - En `static/app.js`, cualquier nuevo clic o movimiento de slider aborta peticiones anteriores en curso, evitando que textos viejos sobrescriban la selección actual.
