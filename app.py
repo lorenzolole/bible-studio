@@ -92,6 +92,26 @@ async def read_index():
     with open(template_path, "r", encoding="utf-8") as f:
         return HTMLResponse(content=f.read())
 
+@app.get("/api/health")
+def health():
+    """Whisper setup as seen by this container (Render logs are not always at hand)."""
+    whisper_cli = subtitles.find_whisper_cli()
+    help_text = ""
+    if whisper_cli:
+        try:
+            res = subprocess.run([whisper_cli, "--help"], capture_output=True, text=True, timeout=10)
+            help_text = res.stdout + res.stderr
+        except Exception as e:
+            help_text = str(e)
+    return {
+        "whisper_cli": whisper_cli,
+        "model_exists": os.path.exists(subtitles.WHISPER_MODEL),
+        "dtw_supported": "--dtw" in help_text and "--no-flash-attn" in help_text,
+        "whisper_dtw": subtitles.WHISPER_DTW,
+        "chapter_whisper": transcripts.CHAPTER_WHISPER,
+        "baked_transcripts": len([f for f in os.listdir(transcripts.BAKED_DIR) if f.endswith(".json")]) if os.path.isdir(transcripts.BAKED_DIR) else 0,
+    }
+
 @app.get("/api/books")
 async def get_books():
     return {"books": downloader.BIBLE_BOOKS}

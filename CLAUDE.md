@@ -76,8 +76,9 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
 1. **Transcripción por capítulo + recorte por clip**: `/api/transcribe` ya no corre Whisper cuando el capítulo tiene transcripción; recorta las palabras del rango (~1 ms). Reemplaza a `assets/preset_transcriptions.json`.
 2. **Timestamps DTW**: `whisper-cli -ojf -dtw base.en -nfa`. Los offsets normales de whisper.cpp se corrían hasta 1.7s; con DTW el error medido es ~0.05s. Si el binario rechaza los flags, reintenta sin DTW (`WHISPER_DTW=0` lo desactiva).
 3. **Variables de entorno**: `CHAPTER_WHISPER` (default `1`; el `Dockerfile` pone `0` porque en 0.1 vCPU un capítulo entero tarda minutos → en Render los capítulos no horneados usan Whisper solo del clip), `WHISPER_THREADS` (default `2`), `WHISPER_DTW` (default `1`).
-4. **Cola de Whisper**: un solo proceso a la vez; si la misma pestaña (`client_id`) pidió otro clip mientras esperaba, el pedido viejo se descarta (`superseded`).
-5. **Bugs corregidos**: render con subtítulos apagados (`timed_phrases` sin definir), comillas rompiendo el editor de frases (escape HTML en `app.js`), versículos truncados por spans anidados en el scraper.
+4. **Diagnóstico en producción**: `GET /api/health` devuelve ruta de `whisper-cli`, modelo, soporte DTW (`dtw_supported`) y cantidad de transcripciones horneadas. Si un clip no horneado responde `"source":"estimate"`, Whisper falló en el contenedor.
+5. **Cola de Whisper**: un solo proceso a la vez; si la misma pestaña (`client_id`) pidió otro clip mientras esperaba, el pedido viejo se descarta (`superseded`).
+6. **Bugs corregidos**: render con subtítulos apagados (`timed_phrases` sin definir), comillas rompiendo el editor de frases (escape HTML en `app.js`), versículos truncados por spans anidados en el scraper.
 
 ### v3.1.0
 

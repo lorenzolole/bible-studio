@@ -10,6 +10,8 @@ Todos los cambios notables de este proyecto se documentarán en este archivo sig
 - **Timestamps DTW** (`-ojf -dtw base.en -nfa`): error medido ~0.05s contra ~1.7s de los offsets normales de whisper.cpp.
 - **Frases cortadas por puntuación** (`words_to_phrases`), sin dejar palabras sueltas como "and" o "the" al final de línea.
 - Variables de entorno `CHAPTER_WHISPER`, `WHISPER_DTW` y `WHISPER_THREADS`.
+- `GET /api/health`: muestra si el contenedor tiene `whisper-cli`, el modelo, soporte DTW y cuántas transcripciones horneadas carga.
+- El reintento sin DTW se decide por la existencia del JSON y no por el exit code (`whisper-cli` sale con 0 ante flags desconocidos).
 
 ### Corregido
 - Render con subtítulos apagados fallaba (`timed_phrases` sin definir).

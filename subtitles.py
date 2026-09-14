@@ -165,12 +165,15 @@ def transcribe_words(audio_file: str, should_abort=None) -> list[list] | None:
             if should_abort and should_abort():
                 return None
             for cmd in attempts:
-                try:
-                    logger.info(f"Running Whisper on {audio_file} ({duration:.1f}s, threads={threads}, dtw={'-dtw' in cmd})...")
-                    subprocess.run(cmd, check=True, capture_output=True, text=True)
+                logger.info(f"Running Whisper on {audio_file} ({duration:.1f}s, threads={threads}, dtw={'-dtw' in cmd})...")
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                # Trust the JSON, not the exit code: argument errors can still exit 0
+                if result.returncode == 0 and os.path.exists(temp_json):
                     break
-                except subprocess.CalledProcessError as e:
-                    logger.warning(f"whisper-cli failed (exit {e.returncode}): {(e.stderr or '')[-300:]}")
+                logger.warning(f"whisper-cli produced no output (exit {result.returncode}, dtw={'-dtw' in cmd}): "
+                               f"{(result.stderr or '')[-500:]}")
+                if os.path.exists(temp_json):
+                    os.remove(temp_json)
 
         if not os.path.exists(temp_json):
             logger.warning(f"Whisper JSON output missing: {temp_json}")
