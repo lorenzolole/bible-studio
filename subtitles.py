@@ -22,6 +22,9 @@ WHISPER_LOCK = threading.Lock()
 # spoken word; DTW timestamps land within ~0.05s of the real onset.
 WHISPER_DTW = os.environ.get("WHISPER_DTW", "1") == "1"
 
+# Last whisper-cli failure, surfaced by /api/health for debugging the container
+LAST_WHISPER_ERROR = None
+
 _SENTENCE_END = re.compile(r"[.;:!?][\"'”’)]*$")
 _CLAUSE_END = re.compile(r"[,—–][\"'”’)]*$")
 _OPENERS = "\"'“‘("
@@ -134,6 +137,7 @@ def transcribe_words(audio_file: str, should_abort=None) -> list[list] | None:
     [[word, start, end], ...]. Returns None when should_abort() says the
     request was superseded while it waited for the Whisper lock.
     """
+    global LAST_WHISPER_ERROR
     whisper_cli = find_whisper_cli()
     if not (whisper_cli and os.path.exists(whisper_cli) and os.path.exists(WHISPER_MODEL)):
         logger.warning(f"Whisper CLI ({whisper_cli}) or model ({WHISPER_MODEL}) not found, falling back to text estimation")
@@ -172,6 +176,12 @@ def transcribe_words(audio_file: str, should_abort=None) -> list[list] | None:
                     break
                 logger.warning(f"whisper-cli produced no output (exit {result.returncode}, dtw={'-dtw' in cmd}): "
                                f"{(result.stderr or '')[-500:]}")
+                LAST_WHISPER_ERROR = {
+                    "exit": result.returncode,
+                    "cmd": " ".join(cmd[1:]),
+                    "stderr": (result.stderr or "")[-800:],
+                    "stdout": (result.stdout or "")[-300:],
+                }
                 if os.path.exists(temp_json):
                     os.remove(temp_json)
 
@@ -187,6 +197,7 @@ def transcribe_words(audio_file: str, should_abort=None) -> list[list] | None:
 
     except Exception as e:
         logger.error(f"Error during whisper transcription: {e}")
+        LAST_WHISPER_ERROR = {"exception": repr(e)}
         return []
     finally:
         for path in (temp_wav, temp_json):

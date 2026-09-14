@@ -108,6 +108,7 @@ def health():
         "model_exists": os.path.exists(subtitles.WHISPER_MODEL),
         "dtw_supported": "--dtw" in help_text and "--no-flash-attn" in help_text,
         "whisper_dtw": subtitles.WHISPER_DTW,
+        "last_whisper_error": subtitles.LAST_WHISPER_ERROR,
         "chapter_whisper": transcripts.CHAPTER_WHISPER,
         "baked_transcripts": len([f for f in os.listdir(transcripts.BAKED_DIR) if f.endswith(".json")]) if os.path.isdir(transcripts.BAKED_DIR) else 0,
     }
