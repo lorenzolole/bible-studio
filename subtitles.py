@@ -201,7 +201,7 @@ def transcribe_words(audio_file: str, should_abort=None, on_progress=None) -> li
                 # Trust the JSON, not the exit code: argument errors can still exit 0
                 if returncode == 0 and os.path.exists(temp_json):
                     elapsed = time.time() - attempt_started
-                    _whisper_sec_per_audio_sec = 0.7 * _whisper_sec_per_audio_sec + 0.3 * elapsed / max(1.0, duration)
+                    _whisper_sec_per_audio_sec = 0.5 * _whisper_sec_per_audio_sec + 0.5 * elapsed / max(1.0, duration)
                     break
                 logger.warning(f"whisper-cli produced no output (exit {returncode}, dtw={'-dtw' in cmd}): {stderr_tail[-500:]}")
                 LAST_WHISPER_ERROR = {"exit": returncode, "cmd": " ".join(cmd[1:]), "stderr": stderr_tail}

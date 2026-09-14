@@ -323,7 +323,9 @@ function showClipProgress(job) {
     if (!clipProgress) return;
     const pct = Math.max(0, Math.min(100, Math.round(job.progress || 0)));
     let meta = `${pct}%`;
-    if (job.stage === "whisper" && typeof job.eta_sec === "number") {
+    if (job.stage === "whisper" && job.overtime) {
+        meta += " · tardando más de lo previsto";
+    } else if (job.stage === "whisper" && typeof job.eta_sec === "number") {
         meta += job.eta_sec >= 1 ? ` · ~${Math.ceil(job.eta_sec)}s` : " · casi listo";
     }
     const label = CLIP_STAGE_LABELS[job.stage] || "Procesando";

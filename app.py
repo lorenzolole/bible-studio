@@ -1,3 +1,4 @@
+import math
 import os
 import shutil
 import time
@@ -236,9 +237,15 @@ def job_view(job: dict) -> dict:
     elif stage == "whisper":
         elapsed = time.time() - job.get("whisper_started_at", time.time())
         expected = max(1.0, job.get("expected_sec", 1.0))
-        fraction = max(job.get("whisper_pct", 0) / 100.0, min(0.97, elapsed / expected))
+        if elapsed <= expected:
+            time_fraction = 0.9 * elapsed / expected
+        else:
+            # Past the estimate (cold container, throttled CPU): keep creeping instead of freezing
+            time_fraction = 0.9 + 0.08 * (1 - math.exp(-(elapsed - expected) / expected))
+        fraction = max(min(0.98, job.get("whisper_pct", 0) / 100.0), time_fraction)
         view["progress"] = round(15 + 82 * fraction)
         view["eta_sec"] = round(max(0.0, expected - elapsed), 1)
+        view["overtime"] = elapsed > expected
     else:
         view["progress"] = 100
     if stage == "done":
