@@ -207,6 +207,16 @@
                                 <div class="spoken-script-body">
                                     <p id="spokenScriptText" class="spoken-script-text">Cargando transcripción...</p>
                                 </div>
+                                <div id="clipProgress" class="clip-progress" hidden>
+                                    <div class="clip-progress-row">
+                                        <span id="clipProgressLabel" class="clip-progress-label">Preparando transcripción</span>
+                                        <span id="clipProgressMeta" class="clip-progress-meta">0%</span>
+                                    </div>
+                                    <div id="clipProgressTrack" class="clip-progress-track" role="progressbar" aria-label="Progreso de la transcripción" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                                        <div id="clipProgressFill" class="clip-progress-fill"></div>
+                                    </div>
+                                    <p class="clip-progress-hint">Este capítulo no está pre-transcripto, así que Whisper procesa el fragmento en el servidor. Los capítulos con ⚡ cargan al instante.</p>
+                                </div>
                             </div>
 
                             <!-- Scripture Passage Reader Drawer -->

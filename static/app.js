@@ -62,6 +62,11 @@ const clipDurationBadge = document.getElementById("clipDurationBadge");
 const spokenScriptBox = document.getElementById("spokenScriptBox");
 const spokenScriptText = document.getElementById("spokenScriptText");
 const spokenWordsBadge = document.getElementById("spokenWordsBadge");
+const clipProgress = document.getElementById("clipProgress");
+const clipProgressLabel = document.getElementById("clipProgressLabel");
+const clipProgressMeta = document.getElementById("clipProgressMeta");
+const clipProgressTrack = document.getElementById("clipProgressTrack");
+const clipProgressFill = document.getElementById("clipProgressFill");
 
 const btnTogglePassage = document.getElementById("btnTogglePassage");
 const passageContentArea = document.getElementById("passageContentArea");
@@ -134,6 +139,7 @@ async function loadBooks() {
         const res = await fetch("/api/books");
         const data = await res.json();
         state.books = data.books;
+        state.instantChapters = data.instant_chapters || {};
 
         bookSelect.innerHTML = "";
         state.books.forEach(b => {
@@ -165,10 +171,12 @@ function selectBookByName(name) {
 function updateChapterDropdown(book) {
     state.selectedBook = book;
     chapterSelect.innerHTML = "";
+    // ⚡ = chapter has a pre-generated transcript, so subtitles load instantly
+    const instant = new Set((state.instantChapters && state.instantChapters[book.osis]) || []);
     for (let i = 1; i <= book.chapters; i++) {
         const opt = document.createElement("option");
         opt.value = i;
-        opt.textContent = `Capítulo ${i}`;
+        opt.textContent = `Capítulo ${i}${instant.has(i) ? " ⚡" : ""}`;
         chapterSelect.appendChild(opt);
     }
 }
@@ -299,6 +307,50 @@ let transcribeAbortController = null;
 // Identifies this tab so the server can skip queued Whisper work for clips we already moved away from
 const CLIENT_ID = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+const CLIP_STAGE_LABELS = {
+    starting: "Preparando transcripción",
+    download: "Descargando audio del capítulo",
+    trim: "Recortando el fragmento",
+    queue: "En cola: hay otra transcripción en curso",
+    whisper: "Transcribiendo con Whisper"
+};
+
+function hideClipProgress() {
+    if (clipProgress) clipProgress.hidden = true;
+}
+
+function showClipProgress(job) {
+    if (!clipProgress) return;
+    const pct = Math.max(0, Math.min(100, Math.round(job.progress || 0)));
+    let meta = `${pct}%`;
+    if (job.stage === "whisper" && typeof job.eta_sec === "number") {
+        meta += job.eta_sec >= 1 ? ` · ~${Math.ceil(job.eta_sec)}s` : " · casi listo";
+    }
+    const label = CLIP_STAGE_LABELS[job.stage] || "Procesando";
+    clipProgress.hidden = false;
+    clipProgressLabel.textContent = label;
+    clipProgressMeta.textContent = meta;
+    clipProgressFill.style.width = `${pct}%`;
+    clipProgressTrack.setAttribute("aria-valuenow", String(pct));
+    transcribeStatus.textContent = `${label} · ${meta}`;
+}
+
+// Poll a background transcription job until it finishes. Returns null if it was aborted or superseded.
+async function waitForTranscribeJob(job, signal) {
+    while (true) {
+        if (job.stage === "superseded") return null;
+        if (job.stage === "error") throw new Error(job.error || "Error en transcripción");
+        if (job.done) return job;
+        showClipProgress(job);
+        await new Promise(resolve => setTimeout(resolve, 800));
+        if (signal.aborted) return null;
+        const res = await fetch(`/api/transcribe_status?job_id=${encodeURIComponent(job.job_id)}`, { signal });
+        if (!res.ok) throw new Error("La transcripción ya no está disponible");
+        job = await res.json();
+        if (signal.aborted) return null;
+    }
+}
+
 function escapeHtml(text) {
     return String(text ?? "")
         .replace(/&/g, "&amp;")
@@ -355,6 +407,7 @@ async function autoTranscribeCurrentSegment() {
     if (spokenScriptText) {
         spokenScriptText.innerHTML = `<span class="loading-pulse">🪄 Sincronizando palabras con David Suchet...</span>`;
     }
+    hideClipProgress();
     btnAutoTranscribe.disabled = true;
 
     try {
@@ -371,14 +424,19 @@ async function autoTranscribeCurrentSegment() {
             })
         });
 
-        const data = await res.json();
+        let data = await res.json();
         if (data.superseded) return; // A newer clip request from this tab replaced it
         if (!data.success) throw new Error("Error en transcripción");
+        if (data.pending) {
+            data = await waitForTranscribeJob(data, currentSignal);
+            if (!data) return; // Aborted or superseded by a newer clip
+        }
+        hideClipProgress();
 
         state.phrases = data.phrases || [];
         renderPhrasesList();
         updateSpokenScriptPreview();
-        transcribeStatus.textContent = `${state.phrases.length} frases sincronizadas${data.source === "chapter" ? " · instantáneo" : ""}`;
+        transcribeStatus.textContent = `${state.phrases.length} frases sincronizadas${data.cached ? " · instantáneo" : ""}`;
         
         if (state.phrases.length > 0) {
             previewCaptionText.textContent = state.phrases[0].text;
@@ -390,6 +448,7 @@ async function autoTranscribeCurrentSegment() {
             return;
         }
         console.error("Transcription error:", e);
+        hideClipProgress();
         transcribeStatus.textContent = "Error de sincronización";
         updateSpokenScriptPreview();
     } finally {

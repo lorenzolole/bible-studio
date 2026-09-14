@@ -2,6 +2,19 @@
 
 Todos los cambios notables de este proyecto se documentarán en este archivo siguiendo el formato [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
+## [3.3.0] - 2026-09-14
+
+### Agregado
+- **Progreso real para capítulos no horneados**: `/api/transcribe` responde al instante con un job (`pending`, `job_id`) y el navegador consulta `GET /api/transcribe_status` cada 800 ms. La tarjeta "Texto hablado" muestra etapa (descarga → recorte → cola → Whisper), porcentaje y tiempo estimado.
+- El ETA combina el porcentaje de `whisper-cli -pp` con el tiempo transcurrido contra la velocidad aprendida de corridas anteriores (`WHISPER_SEC_PER_AUDIO_SEC`, 3.5 en Docker).
+- **Marcador ⚡ en el selector de capítulos** para los que tienen transcripción (`instant_chapters` en `/api/books`).
+- **Más capítulos horneados**: Nuevo Testamento completo, Génesis, Éxodo, Salmos, Proverbios e Isaías, además de la lista popular. `bake_transcripts.py` borra los MP3 que descarga (`--keep-audio` para conservarlos).
+
+### Cambiado
+- El mismo clip pedido desde dos pestañas reutiliza un único job; un clip ya transcripto en la sesión responde sin job.
+
+---
+
 ## [3.2.0] - 2026-09-14
 
 ### Agregado

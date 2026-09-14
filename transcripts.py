@@ -71,13 +71,28 @@ def save_words(osis: str, chapter: int, words: list[list], duration: float, dire
     _words_memory[(osis, chapter)] = words
     return path
 
-def transcribe_chapter(osis: str, chapter: int, audio_path: str, directory: str = RUNTIME_DIR) -> list[list] | None:
+def available_chapters() -> dict[str, list[int]]:
+    """Chapters with a transcript (they load instantly), as {osis: [chapter, ...]}."""
+    chapters = {}
+    for directory in (BAKED_DIR, RUNTIME_DIR):
+        if not os.path.isdir(directory):
+            continue
+        for name in os.listdir(directory):
+            if not name.endswith(".json"):
+                continue
+            osis, _, chapter = name[:-len(".json")].rpartition("_")
+            if osis and chapter.isdigit():
+                chapters.setdefault(osis, set()).add(int(chapter))
+    return {osis: sorted(chs) for osis, chs in chapters.items()}
+
+def transcribe_chapter(osis: str, chapter: int, audio_path: str, directory: str = RUNTIME_DIR,
+                       on_progress=None) -> list[list] | None:
     """Whisper the full chapter and persist its words; no-op if a transcript already exists."""
     with _transcribe_lock:
         words = load_words(osis, chapter)
         if words:
             return words
-        words = subtitles.transcribe_words(audio_path)
+        words = subtitles.transcribe_words(audio_path, on_progress=on_progress)
         if not words:
             return None
         duration = audio_engine.get_audio_duration(audio_path) or words[-1][2]

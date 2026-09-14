@@ -5,9 +5,10 @@ serves these chapters instantly (no Whisper on Render's shared CPU).
 
 Run it on the Mac (Metal whisper, a few seconds per chapter) and commit the JSON:
 
-  WHISPER_THREADS=8 python3 bake_transcripts.py              # popular chapters
+  WHISPER_THREADS=8 python3 bake_transcripts.py              # popular chapters + full books
   WHISPER_THREADS=8 python3 bake_transcripts.py John 3 Ps 23 # specific chapters
   python3 bake_transcripts.py --force                        # re-transcribe existing ones
+  python3 bake_transcripts.py --keep-audio                   # keep downloaded MP3s in cache/audio
 """
 import os
 import sys
@@ -30,11 +31,17 @@ POPULAR_CHAPTERS = {
     "Heb": [4, 11, 12], "Jas": [1], "1Pet": [2, 5], "1John": [1, 4], "Rev": [1, 21, 22],
 }
 
+# Books baked in full: the whole New Testament plus the most quoted Old Testament books
+FULL_BOOKS = ["Gen", "Exod", "Ps", "Prov", "Isa"] + [b["osis"] for b in downloader.BIBLE_BOOKS if b["testament"] == "NT"]
+
 def parse_targets(args: list[str]) -> list[tuple[str, int]]:
     if not args:
-        return [(osis, ch) for osis, chapters in POPULAR_CHAPTERS.items() for ch in chapters]
+        chapter_counts = {b["osis"]: b["chapters"] for b in downloader.BIBLE_BOOKS}
+        targets = [(osis, ch) for osis, chapters in POPULAR_CHAPTERS.items() for ch in chapters]
+        targets += [(osis, ch) for osis in FULL_BOOKS for ch in range(1, chapter_counts[osis] + 1)]
+        return list(dict.fromkeys(targets))
     if len(args) % 2:
-        sys.exit("Usage: bake_transcripts.py [BOOK CHAPTER ...] [--force]")
+        sys.exit("Usage: bake_transcripts.py [BOOK CHAPTER ...] [--force] [--keep-audio]")
     targets = []
     for book, chapter in zip(args[::2], args[1::2]):
         info = downloader.resolve_book(book)
@@ -44,8 +51,10 @@ def parse_targets(args: list[str]) -> list[tuple[str, int]]:
     return targets
 
 def main():
+    flags = {"--force", "--keep-audio"}
     force = "--force" in sys.argv
-    targets = parse_targets([a for a in sys.argv[1:] if a != "--force"])
+    keep_audio = "--keep-audio" in sys.argv
+    targets = parse_targets([a for a in sys.argv[1:] if a not in flags])
     chapter_counts = {b["osis"]: b["chapters"] for b in downloader.BIBLE_BOOKS}
 
     suspicious = []
@@ -63,8 +72,18 @@ def main():
             transcripts._words_memory.pop((osis, chapter), None)
 
         t0 = time.time()
-        audio = downloader.download_audio_chapter(osis, chapter)
-        words = transcripts.transcribe_chapter(osis, chapter, audio["local_path"], directory=transcripts.BAKED_DIR)
+        audio_path = os.path.join(downloader.CACHE_DIR, f"{osis}_{chapter}.mp3")
+        audio_was_cached = os.path.exists(audio_path)
+        try:
+            audio = downloader.download_audio_chapter(osis, chapter)
+            words = transcripts.transcribe_chapter(osis, chapter, audio["local_path"], directory=transcripts.BAKED_DIR)
+        except Exception as e:
+            print(f"{label}: failed ({e})")
+            suspicious.append((osis, chapter, 0.0))
+            continue
+        finally:
+            if not audio_was_cached and not keep_audio and os.path.exists(audio_path):
+                os.remove(audio_path)
         if not words:
             print(f"{label}: Whisper returned no words")
             suspicious.append((osis, chapter, 0.0))
@@ -73,7 +92,7 @@ def main():
         # Compare against the official NIV-UK word count to catch hallucination loops or dropped audio
         official = downloader.fetch_passage_text(osis, chapter).get("text", "")
         ratio = len(words) / max(1, len(official.split())) if official else 0.0
-        flag = "" if 0.85 <= ratio <= 1.2 else "  <-- check"
+        flag = "" if 0.9 <= ratio <= 1.15 else "  <-- check"
         if flag:
             suspicious.append((osis, chapter, ratio))
         print(f"{label}: {len(words)} words, ratio {ratio:.2f}, {time.time() - t0:.1f}s{flag}")

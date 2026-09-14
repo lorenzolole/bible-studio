@@ -52,6 +52,13 @@ SESSION_TRANSCRIPTION_CACHE = {}
 # the user already moved away from is skipped instead of run.
 LATEST_CLIP_REQUEST = {}
 
+# Clips that need Whisper run as background jobs the browser polls for progress
+TRANSCRIBE_JOBS = {}
+JOBS_BY_CLIP = {}
+JOBS_LOCK = threading.Lock()
+JOB_TTL_SEC = 600
+FINISHED_STAGES = ("done", "error", "superseded")
+
 # Endpoints run in FastAPI's threadpool; two concurrent 1080x1920 renders would exceed 512 MB.
 RENDER_LOCK = threading.Lock()
 
@@ -114,8 +121,8 @@ def health():
     }
 
 @app.get("/api/books")
-async def get_books():
-    return {"books": downloader.BIBLE_BOOKS}
+def get_books():
+    return {"books": downloader.BIBLE_BOOKS, "instant_chapters": transcripts.available_chapters()}
 
 @app.get("/api/chapter_info")
 def get_chapter_info(book: str, chapter: int):
@@ -159,36 +166,41 @@ def get_chapter_transcription(book: str, chapter: int):
         logger.error(f"Error getting chapter transcription: {e}")
         return {"success": False, "phrases": [], "error": str(e)}
 
+def clip_cache_key(osis: str, chapter: int, start_sec: float, end_sec: float) -> str:
+    return f"{osis}_{chapter}_{start_sec:.1f}_{end_sec:.1f}"
+
 def get_clip_phrases(book_info: dict, book: str, chapter: int, start_sec: float, end_sec: float,
-                     client_id: Optional[str] = None) -> tuple[list, str]:
-    """Timed phrases for a clip, relative to its start. Returns (phrases, source)."""
+                     should_abort=None, on_progress=None) -> tuple[list, str]:
+    """Timed phrases for a clip, relative to its start. Returns (phrases, source).
+    on_progress(dict) receives stage updates for the background job view."""
     osis = book_info["osis"]
     raw_audio = os.path.join(CACHE_DIR, "audio", f"{osis}_{chapter}.mp3")
+    report = on_progress or (lambda update: None)
+
+    def ensure_audio():
+        if not os.path.exists(raw_audio):
+            report({"stage": "download"})
+        downloader.download_audio_chapter(book, chapter)
 
     # 1. Slice the chapter transcript (baked, or generated now where whole-chapter Whisper is fast)
     words = transcripts.load_words(osis, chapter)
     if words is None and transcripts.CHAPTER_WHISPER:
-        downloader.download_audio_chapter(book, chapter)
-        words = transcripts.transcribe_chapter(osis, chapter, raw_audio)
+        ensure_audio()
+        words = transcripts.transcribe_chapter(osis, chapter, raw_audio, on_progress=on_progress)
     if words:
         return transcripts.clip_phrases(words, start_sec, end_sec), "chapter"
 
-    cache_key = f"{osis}_{chapter}_{start_sec:.1f}_{end_sec:.1f}"
+    cache_key = clip_cache_key(osis, chapter, start_sec, end_sec)
     if cache_key in SESSION_TRANSCRIPTION_CACHE:
         return SESSION_TRANSCRIPTION_CACHE[cache_key], "session"
 
-    # 2. Whisper just this clip; skip it if the same tab asked for another clip meanwhile
-    should_abort = None
-    if client_id:
-        token = object()
-        LATEST_CLIP_REQUEST[client_id] = token
-        should_abort = lambda: LATEST_CLIP_REQUEST.get(client_id) is not token
-
-    downloader.download_audio_chapter(book, chapter)
+    # 2. Whisper just this clip
+    ensure_audio()
+    report({"stage": "trim"})
     temp_voice = os.path.join(CACHE_DIR, f"transcribe_voice_{uuid.uuid4().hex}.mp3")
     try:
         audio_engine.trim_speech_audio(raw_audio, temp_voice, start_sec, end_sec, enhance_voice=False)
-        clip_words = subtitles.transcribe_words(temp_voice, should_abort=should_abort)
+        clip_words = subtitles.transcribe_words(temp_voice, should_abort=should_abort, on_progress=on_progress)
     finally:
         if os.path.exists(temp_voice):
             os.remove(temp_voice)
@@ -213,22 +225,98 @@ def get_clip_phrases(book_info: dict, book: str, chapter: int, start_sec: float,
     txt = " ".join(text_words[start_idx:start_idx + num_words])
     return subtitles.generate_timed_subtitles(txt, clip_duration), "estimate"
 
+def job_view(job: dict) -> dict:
+    """Progress snapshot of a transcription job. Whisper progress blends whisper-cli's own
+    percentage (coarse: one step per 30s window) with elapsed time against the learned ETA."""
+    stage = job["stage"]
+    view = {"job_id": job["id"], "stage": stage, "done": stage in FINISHED_STAGES}
+    base = {"starting": 2, "download": 5, "trim": 10, "queue": 12}
+    if stage in base:
+        view["progress"] = base[stage]
+    elif stage == "whisper":
+        elapsed = time.time() - job.get("whisper_started_at", time.time())
+        expected = max(1.0, job.get("expected_sec", 1.0))
+        fraction = max(job.get("whisper_pct", 0) / 100.0, min(0.97, elapsed / expected))
+        view["progress"] = round(15 + 82 * fraction)
+        view["eta_sec"] = round(max(0.0, expected - elapsed), 1)
+    else:
+        view["progress"] = 100
+    if stage == "done":
+        view.update(success=True, phrases=job.get("phrases", []), source=job.get("source"))
+    elif stage == "error":
+        view.update(success=False, error=job.get("error"))
+    elif stage == "superseded":
+        view.update(success=False, superseded=True)
+    return view
+
+def run_transcribe_job(job: dict, book_info: dict, req: TranscribeRequest):
+    try:
+        phrases, source = get_clip_phrases(book_info, req.book, req.chapter, req.start_sec, req.end_sec,
+                                           should_abort=job["should_abort"], on_progress=job.update)
+        job.update(stage="superseded" if source == "superseded" else "done", phrases=phrases, source=source)
+    except Exception as e:
+        logger.error(f"Transcription job failed: {e}", exc_info=True)
+        job.update(stage="error", error=str(e))
+    finally:
+        job["finished_at"] = time.time()
+
 @app.post("/api/transcribe")
 def transcribe_audio_segment(req: TranscribeRequest):
     try:
         book_info = downloader.resolve_book(req.book)
         if not book_info:
             raise HTTPException(status_code=400, detail="Invalid book")
+        osis = book_info["osis"]
 
-        phrases, source = get_clip_phrases(book_info, req.book, req.chapter, req.start_sec, req.end_sec, req.client_id)
-        if source == "superseded":
-            return {"success": False, "superseded": True, "phrases": []}
-        return {"success": True, "phrases": phrases, "source": source, "cached": source in ("chapter", "session")}
+        # Instant answers: chapter transcript slice or a clip already transcribed this session
+        words = transcripts.load_words(osis, req.chapter)
+        if words:
+            phrases = transcripts.clip_phrases(words, req.start_sec, req.end_sec)
+            return {"success": True, "phrases": phrases, "source": "chapter", "cached": True}
+        cache_key = clip_cache_key(osis, req.chapter, req.start_sec, req.end_sec)
+        if cache_key in SESSION_TRANSCRIPTION_CACHE:
+            return {"success": True, "phrases": SESSION_TRANSCRIPTION_CACHE[cache_key], "source": "session", "cached": True}
+
+        # Everything else runs as a background job the browser polls via /api/transcribe_status
+        with JOBS_LOCK:
+            now = time.time()
+            for job_id, old in list(TRANSCRIBE_JOBS.items()):
+                if old.get("finished_at") and now - old["finished_at"] > JOB_TTL_SEC:
+                    TRANSCRIBE_JOBS.pop(job_id, None)
+                    if JOBS_BY_CLIP.get(old["clip"]) is old:
+                        JOBS_BY_CLIP.pop(old["clip"], None)
+
+            job = JOBS_BY_CLIP.get(cache_key)
+            if job and job["stage"] in FINISHED_STAGES and job["stage"] != "done":
+                job = None  # retry clips that failed or were skipped
+            if job is None:
+                token = object()
+                job = {"id": uuid.uuid4().hex, "clip": cache_key, "stage": "starting", "token": token}
+                # Skip the queued Whisper run if this tab asks for another clip before it starts
+                client_id = req.client_id
+                job["should_abort"] = (lambda: LATEST_CLIP_REQUEST.get(client_id) is not token) if client_id else None
+                TRANSCRIBE_JOBS[job["id"]] = job
+                JOBS_BY_CLIP[cache_key] = job
+                threading.Thread(target=run_transcribe_job, args=(job, book_info, req), daemon=True).start()
+            if req.client_id:
+                LATEST_CLIP_REQUEST[req.client_id] = job["token"]
+
+        view = job_view(job)
+        if view["done"] and view.get("success"):
+            return {"success": True, "phrases": view["phrases"], "source": view["source"], "cached": True}
+        return {"success": True, "pending": True, **view}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Transcription failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/transcribe_status")
+def transcribe_status(job_id: str):
+    job = TRANSCRIBE_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Transcripción no encontrada")
+    return job_view(job)
 
 @app.get("/api/presets")
 async def get_presets():

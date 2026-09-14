@@ -5,6 +5,7 @@ import subprocess
 import json
 import logging
 import threading
+import time
 import uuid
 
 logging.basicConfig(level=logging.INFO)
@@ -24,6 +25,13 @@ WHISPER_DTW = os.environ.get("WHISPER_DTW", "1") == "1"
 
 # Last whisper-cli failure, surfaced by /api/health for debugging the container
 LAST_WHISPER_ERROR = None
+
+# Whisper wall time per second of audio, learned from finished runs. Only drives the progress ETA.
+_whisper_sec_per_audio_sec = float(os.environ.get("WHISPER_SEC_PER_AUDIO_SEC", "0.5"))
+_PROGRESS_RE = re.compile(r"progress\s*=\s*(\d+)%")
+
+def estimate_whisper_seconds(audio_seconds: float) -> float:
+    return max(1.0, _whisper_sec_per_audio_sec * audio_seconds)
 
 _SENTENCE_END = re.compile(r"[.;:!?][\"'”’)]*$")
 _CLAUSE_END = re.compile(r"[,—–][\"'”’)]*$")
@@ -131,13 +139,28 @@ def words_from_whisper_json(data: dict, duration: float | None = None) -> list[l
         w[1] = round(w[1], 2)
     return merged
 
-def transcribe_words(audio_file: str, should_abort=None) -> list[list] | None:
+def _run_whisper(cmd: list[str], report) -> tuple[int, str]:
+    """Run whisper-cli, forwarding its -pp percentage to report(). Returns (exit code, stderr tail)."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors="replace")
+    tail = []
+    for line in proc.stderr:
+        match = _PROGRESS_RE.search(line)
+        if match:
+            report({"whisper_pct": int(match.group(1))})
+        else:
+            tail = (tail + [line])[-30:]
+    return proc.wait(), "".join(tail)[-800:]
+
+def transcribe_words(audio_file: str, should_abort=None, on_progress=None) -> list[list] | None:
     """
     Run whisper-cli on an audio file and return word-level timestamps
     [[word, start, end], ...]. Returns None when should_abort() says the
     request was superseded while it waited for the Whisper lock.
+    on_progress(dict) receives {"stage": "queue"}, then {"stage": "whisper", ...}
+    with the start time, expected duration and whisper-cli's own percentage.
     """
-    global LAST_WHISPER_ERROR
+    global LAST_WHISPER_ERROR, _whisper_sec_per_audio_sec
+    report = on_progress or (lambda update: None)
     whisper_cli = find_whisper_cli()
     if not (whisper_cli and os.path.exists(whisper_cli) and os.path.exists(WHISPER_MODEL)):
         logger.warning(f"Whisper CLI ({whisper_cli}) or model ({WHISPER_MODEL}) not found, falling back to text estimation")
@@ -159,29 +182,29 @@ def transcribe_words(audio_file: str, should_abort=None) -> list[list] | None:
 
         threads = os.environ.get("WHISPER_THREADS", "2")
         base_cmd = [whisper_cli, "-m", WHISPER_MODEL, "-f", temp_wav, "-t", threads,
-                    "-ojf", "-of", out_base, "--no-prints"]
+                    "-ojf", "-of", out_base, "--no-prints", "-pp"]
         attempts = [base_cmd]
         if WHISPER_DTW:
             # DTW is incompatible with flash attention; retry without DTW if this build rejects it
             attempts.insert(0, base_cmd + ["-dtw", _dtw_preset(), "-nfa"])
 
+        report({"stage": "queue"})
         with WHISPER_LOCK:
             if should_abort and should_abort():
                 return None
+            report({"stage": "whisper", "whisper_started_at": time.time(), "whisper_pct": 0,
+                    "expected_sec": estimate_whisper_seconds(duration)})
             for cmd in attempts:
                 logger.info(f"Running Whisper on {audio_file} ({duration:.1f}s, threads={threads}, dtw={'-dtw' in cmd})...")
-                result = subprocess.run(cmd, capture_output=True, text=True)
+                attempt_started = time.time()
+                returncode, stderr_tail = _run_whisper(cmd, report)
                 # Trust the JSON, not the exit code: argument errors can still exit 0
-                if result.returncode == 0 and os.path.exists(temp_json):
+                if returncode == 0 and os.path.exists(temp_json):
+                    elapsed = time.time() - attempt_started
+                    _whisper_sec_per_audio_sec = 0.7 * _whisper_sec_per_audio_sec + 0.3 * elapsed / max(1.0, duration)
                     break
-                logger.warning(f"whisper-cli produced no output (exit {result.returncode}, dtw={'-dtw' in cmd}): "
-                               f"{(result.stderr or '')[-500:]}")
-                LAST_WHISPER_ERROR = {
-                    "exit": result.returncode,
-                    "cmd": " ".join(cmd[1:]),
-                    "stderr": (result.stderr or "")[-800:],
-                    "stdout": (result.stdout or "")[-300:],
-                }
+                logger.warning(f"whisper-cli produced no output (exit {returncode}, dtw={'-dtw' in cmd}): {stderr_tail[-500:]}")
+                LAST_WHISPER_ERROR = {"exit": returncode, "cmd": " ".join(cmd[1:]), "stderr": stderr_tail}
                 if os.path.exists(temp_json):
                     os.remove(temp_json)
 

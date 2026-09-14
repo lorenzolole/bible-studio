@@ -6,7 +6,7 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
 
 ## 📌 Contexto Rápido & Enlaces Oficiales
 
-- **Nombre del Proyecto**: Bible Studio *(v3.2.0 — renombrado desde TikTok Bible Studio)*.
+- **Nombre del Proyecto**: Bible Studio *(v3.3.0 — renombrado desde TikTok Bible Studio)*.
 - **Repositorio Oficial en GitHub**: [https://github.com/lorenzolole/bible-studio](https://github.com/lorenzolole/bible-studio)
   - **Cuenta GitHub Activa**: `lorenzolole`
   - **Rama Principal**: `main`
@@ -63,7 +63,7 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
 - `static/app.js`: Lógica del cliente, scrubber del timeline, snapping interactivo, e integración de `AbortController` para evitar condiciones de carrera.
 - `static/style.css`: Estilos de la aplicación.
 - `templates/index.html`: Plantilla principal del estudio web.
-- `assets/transcripts/`: Transcripciones horneadas (`{osis}_{cap}.json`, formato `{"version":1,"words":[[palabra, inicio, fin], ...]}`) de ~125 capítulos populares, incluidos los pasajes virales.
+- `assets/transcripts/`: Transcripciones horneadas (`{osis}_{cap}.json`, formato `{"version":1,"words":[[palabra, inicio, fin], ...]}`): Nuevo Testamento completo, Génesis, Éxodo, Salmos, Proverbios, Isaías y capítulos populares del resto del AT (incluidos los pasajes virales).
 - `assets/`: Biblioteca de música (`music/`), arte sacro (`visuals/`), miniaturas (`thumbnails/`) y overlays (`overlays/`).
 - `Dockerfile`: Multi-stage build (compila `whisper.cpp` estático sin dependencias dinámicas, instala FFmpeg y descarga `ggml-base.en.bin`).
 - `requirements.txt`: Dependencias Python (`fastapi`, `uvicorn`, `Pillow`, `numpy`, `pydantic`, `python-multipart`).
@@ -71,7 +71,14 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
 
 ---
 
-## ⚡ Cambios Recientes Realizados (v3.2.0)
+## ⚡ Cambios Recientes Realizados (v3.3.0)
+
+1. **Jobs de transcripción con progreso**: si el clip no sale de una transcripción de capítulo ni del caché de sesión, `/api/transcribe` crea un job en un thread (`TRANSCRIBE_JOBS`) y devuelve `{"pending": true, "job_id", "stage", "progress"}`. El frontend (`waitForTranscribeJob` en `app.js`) consulta `GET /api/transcribe_status?job_id=` y muestra etapa, % y ETA en `#clipProgress`. Los jobs terminados se limpian a los 10 min.
+2. **ETA**: `subtitles.estimate_whisper_seconds()` usa una velocidad aprendida (EMA) inicializada con `WHISPER_SEC_PER_AUDIO_SEC` (default 0.5; Docker 3.5) y se combina con el `-pp` de whisper-cli, que avanza por ventanas de 30s.
+3. **⚡ en el selector de capítulos**: `/api/books` incluye `instant_chapters` (`transcripts.available_chapters()`).
+4. **Horneado ampliado**: `bake_transcripts.py` sin argumentos hornea la lista popular + `FULL_BOOKS` (NT completo, Gen, Exod, Ps, Prov, Isa).
+
+### v3.2.0
 
 1. **Transcripción por capítulo + recorte por clip**: `/api/transcribe` ya no corre Whisper cuando el capítulo tiene transcripción; recorta las palabras del rango (~1 ms). Reemplaza a `assets/preset_transcriptions.json`.
 2. **Timestamps DTW**: `whisper-cli -ojf -dtw base.en -nfa`. Los offsets normales de whisper.cpp se corrían hasta 1.7s; con DTW el error medido es ~0.05s. Si el binario rechaza los flags, reintenta sin DTW (`WHISPER_DTW=0` lo desactiva).
@@ -103,7 +110,7 @@ Documento técnico de referencia y guía de contexto para asistentes de IA (Clau
 1. **Capítulos No Horneados en la Nube (CPU Throttling)**:
    - Los capítulos de `assets/transcripts/` responden al instante. Un capítulo no horneado (ej. *Levítico 15*) en Render sigue necesitando Whisper por clip en 0.1 vCPU, y el lector de capítulo no muestra marcas de tiempo.
    - *Para sumar capítulos*: agregarlos a `POPULAR_CHAPTERS` en `bake_transcripts.py` (o pasarlos por argumento), correrlo en la Mac y commitear los JSON.
-   - *Pendiente*: indicador de progreso por etapas en la UI, alinear palabras de Whisper con el texto oficial NIV-UK (corrige nombres mal oídos, ej. "Curia Thaba" por "Kiriath Arba"), recalibrar los rangos de los botones virales usando las palabras horneadas (Proverbios 3 e Isaías 41 arrancan con la cola del versículo anterior).
+   - *Pendiente*: alinear palabras de Whisper con el texto oficial NIV-UK (corrige nombres mal oídos, ej. "Curia Thaba" por "Kiriath Arba"), recalibrar los rangos de los botones virales usando las palabras horneadas (Proverbios 3 e Isaías 41 arrancan con la cola del versículo anterior).
 2. **Renderizado de Video en la Nube vs Local**:
    - En la Mac local (Apple M4), FFmpeg renderiza el video en 4 segundos usando aceleración por hardware Metal/VideoToolbox.
    - En Render (0.1 vCPU), el renderizado es por software puro libx264. Asegurarse de mantener los hilos bajos y los presets rápidos.

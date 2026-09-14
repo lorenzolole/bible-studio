@@ -39,3 +39,6 @@ outputs/thumbnails/*
 *.swo
 assets/overlays/*.mov
 !assets/overlays/.gitkeep
+
+# Partially written transcripts while bake_transcripts.py runs
+assets/transcripts/*.tmp

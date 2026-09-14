@@ -35,7 +35,8 @@ FROM python:3.11-slim-bookworm
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PORT=7860 \
-    CHAPTER_WHISPER=0
+    CHAPTER_WHISPER=0 \
+    WHISPER_SEC_PER_AUDIO_SEC=3.5
 
 # Install runtime system packages (FFmpeg, fonts, certs, curl)
 RUN apt-get update && apt-get install -y --no-install-recommends \
