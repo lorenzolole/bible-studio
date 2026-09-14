@@ -1,96 +1,109 @@
-# CLAUDE.md — Guía del Proyecto TikTok Bible Studio
+# CLAUDE.md — Guía Técnica & Handoff para Bible Studio
 
-Documento técnico de referencia y guía de desarrollo para asistentes de IA y desarrolladores que trabajen en el repositorio **TikTokBible**.
+Documento técnico de referencia y guía de contexto para asistentes de IA (Claude Code) y desarrolladores que continúen el desarrollo de **Bible Studio**.
 
 ---
 
-## 📖 Descripción del Proyecto
+## 📌 Contexto Rápido & Enlaces Oficiales
 
-**TikTok Bible Studio** (v3.0.0) es una suite de creación automatizada de videos verticales (9:16, 1080×1920) optimizados para TikTok, Instagram Reels y YouTube Shorts. Combina:
-1. **Audio oficial de David Suchet** (NIV-UK de BibleGateway) con compresión y realce vocal.
-2. **Música real viral y contemplativa** (Emile Mosseri, Salvia Palth, Disasterpeace, Soil, Daniel.mp3, Cloud9ine, Her Soundtrack) con ducking y mezcla automática.
-3. **Motor de Video Cinemático Multicapa (v3.0)**:
-   - **Micro-movimiento Orgánico de Cámara**: respiración y deriva sinusoidal armónica de cámara en mano (evitando el zoom plano robótico).
-   - **Pulsos Dinámicos Sincronizados con Whisper**: micro-zooms suaves (+2.2%) que acompañan el clímax vocal de David Suchet.
-   - **Atmósfera de Polvo Celestial**: partículas luminosas doradas y etéreas flotando continuamente con desenfoque bokeh.
-   - **Fuga de Luz Cálida Anamórfica**: destello ámbar/dorado inicial (0-2s) que funciona como gancho de retención de scroll en TikTok.
-   - **Grano Fílmico Analógico 35mm**: emulsión de celuloide solemne que unifica los tonos del arte sacro.
-   - 3 modos de lienzo: `pitch_black` (@nehzro), `fullscreen` (@nanagoes5) y `ambient`.
-4. **Subtítulos sincronizados con IA**: Integración nativa con `whisper-cli` (Whisper en Apple Silicon GPU Metal) para temporización precisa palabra por palabra en 4 estilos ASS (`Typewriter`, `SpokenByHim`, `ClassicSerif`, `ModernBold`).
-5. **Estudio Web Minimalista & Preciso**:
-   - Panel de control de **Atmósfera & Efectos Cinemáticos (Viral FX)** con toggles independientes.
-   - Timeline con doble tirador arrastrable (`handleStart`, `handleEnd`), desplazamiento continuo de ventana y regla de tiempo.
-   - 8 Pasajes virales calibrados al segundo exacto (Juan 3:16 en 120s–133s).
-   - Cajón de texto bíblico con búsqueda y salto directo por versículo (`/api/chapter_transcription`).
-   - Mockup móvil sticky con proyección en tiempo real de marca de agua (`@canal`) y reproductor instantáneo.
+- **Nombre del Proyecto**: Bible Studio *(v3.1.0 — renombrado desde TikTok Bible Studio)*.
+- **Repositorio Oficial en GitHub**: [https://github.com/lorenzolole/bible-studio](https://github.com/lorenzolole/bible-studio)
+  - **Cuenta GitHub Activa**: `lorenzolole`
+  - **Rama Principal**: `main`
+- **URL en Producción en Vivo**: [https://bible-studio.onrender.com](https://bible-studio.onrender.com)
+  - **Plataforma de Despliegue**: Render.com Web Service (Runtime Docker, Plan Gratuito $0/mes, 0.1 vCPU, 512 MB RAM).
+  - **Auto-Deploy**: Cualquier `git push origin main` a GitHub dispara automáticamente el build y deploy en Render.
+- **Directorio Local**: `/Users/lolescaldaferro/Antigravity/TikTokBible`
+
+---
+
+## 📖 Descripción del Producto
+
+**Bible Studio** es una suite y estudio web automatizado para generar videos verticales solemnes y de alta retención (formato 9:16, 1080×1920) orientados a TikTok, Instagram Reels y YouTube Shorts.
+
+### Componentes Clave:
+1. **Audio Sagrado Oficial de David Suchet**:
+   - Narración británica oficial de la Biblia NIV-UK extraída dinámicamente de BibleGateway.
+   - 66 libros del Antiguo y Nuevo Testamento disponibles en español e inglés.
+2. **Música Viral y Contemplativa**:
+   - Pistas en `assets/music/`: *Magic (Slowed)* de Cloud9ine, *Gods Creation* de daniel.mp3, *Dimensions* de Arcade Fire, *Jacob and the Stone* de Emile Mosseri, *Dream* de Salvia Palth, *Wilderness* de Soil, *The Sound of Myself* de Disasterpeace.
+   - Ducking inteligente de volumen vocal (baja la música al 15% mientras Suchet habla).
+3. **Subtítulos Sincronizados con IA (Whisper)**:
+   - Sincronización palabra por palabra con `whisper-cli` (whisper.cpp).
+   - 4 estilos ASS: `Typewriter` (máquina de escribir dorada), `SpokenByHim` (oro celestial con sombra), `ClassicSerif` (serif clásico), `ModernBold` (grotesco moderno).
+4. **Motor Cinemático de Video (v3.0)**:
+   - **Ken Burns Continuo**: Acercamiento suave centrado sin saltos ni temblores artificiales.
+   - **3 Modos de Encuadre**: `pitch_black` (fondo negro puro #000 con marco áureo redondeado estilo @nehzro), `fullscreen` (pantalla completa con viñeta estilo @nanagoes5), `ambient` (fondo desenfocado).
+   - **Efectos Cinemáticos (Viral FX)**: Polvo celestial (partículas de luz), fuga de luz cálida (hook inicial 0-2s), grano fílmico 35mm.
 
 ---
 
 ## 🛠️ Stack Tecnológico
 
-- **Backend**: Python 3.13 + FastAPI + Uvicorn + Pydantic
-- **Procesamiento Multimedia**: FFmpeg 8.0 (con aceleración `videotoolbox` y filtros `subtitles`, `boxblur`, `alphamerge`, `xfade`, `aecho`, viñeta)
-- **Manipulación de Imágenes**: Pillow (generación de máscaras antialiased de esquinas redondeadas)
-- **Transcripción de Voz / IA**: `whisper-cli` (whisper.cpp v1.9.4) con modelo `ggml-base.en.bin` en GPU Apple Silicon Metal
-- **Frontend**: HTML5 + CSS3 (estética minimalista suiza/Apple dark-mode) + Vanilla JS
+- **Backend**: Python 3.11/3.13 + FastAPI + Uvicorn + Pydantic.
+- **IA / Speech-to-Text**: `whisper-cli` (whisper.cpp v1.9.4) con modelo `ggml-base.en.bin` (en local acelerado por Metal GPU; en Docker compilado estáticamente para CPU).
+- **Procesamiento de Video & Audio**: FFmpeg 8.0 (con filtros de escala, ASS subtitles, compand, boxblur, alphamerge).
+- **Manipulación Gráfica**: Pillow (máscaras antialiased, generación de overlays de partículas).
+- **Frontend**: HTML5 + CSS3 (Apple/Linear dark mode sobrio) + Vanilla JS reactivo.
+- **Infraestructura**: Docker multi-stage build (`Dockerfile`), optimizado para Render y Hugging Face Spaces.
 
 ---
 
-## 🚀 Comandos Principales
+## 📁 Estructura del Repositorio
 
-### Iniciar Servidor Web
-```bash
-# Script de inicio rápido (abre el navegador automáticamente en macOS)
-./run.sh
-
-# O manualmente con Uvicorn:
-python3 -m uvicorn app:app --host 0.0.0.0 --port 8000
-```
-
-### Generador CLI (Línea de Comandos)
-```bash
-# Ejemplo: Salmos 23 de 3s a 17s con subtítulos estilo máquina de escribir
-python3 create_clip.py --book "Salmos" --chapter 23 --start 3 --end 17 --citation "PSALM 23:1-3" --style typewriter
-
-# Ejemplo: Juan 3 con modo pitch_black y música cloud9ine
-python3 create_clip.py --book "Juan" --chapter 3 --start 120.0 --end 133.0 --citation "JOHN 3:16" --style spokenbyhim --mode pitch_black
-```
-
-### Cerrar Puertos / Matar Servidor
-```bash
-kill -9 $(lsof -ti:8000) 2>/dev/null || true
-```
+- `app.py`: Servidor FastAPI, endpoints REST (`/api/books`, `/api/chapter_info`, `/api/chapter_transcription`, `/api/transcribe`, `/api/render`, `/api/presets`, `/api/videos`). Implementa `SESSION_TRANSCRIPTION_CACHE` y `PRESET_TRANSCRIPTIONS`.
+- `downloader.py`: Motor de scraping y descarga de audio de David Suchet y texto bíblico de BibleGateway. Limpieza de encabezados HTML (`<h1-h6>`), notas al pie y entidades `&nbsp;`.
+- `audio_engine.py`: Recorte de audio con `ffmpeg`, compresión vocal broadcast y mezcla con música duckeada.
+- `subtitles.py`: Descubrimiento dinámico de `whisper-cli`, conversión a WAV 16kHz mono para whisper, y formateo de subtítulos `.ass`.
+- `video_engine.py`: Motor de composición de video vertical 1080×1920 con control de hilos (`-threads 2`) y preset (`veryfast`) para no exceder 512 MB RAM.
+- `create_clip.py`: Interfaz de línea de comandos (CLI) para generación por lotes.
+- `generate_overlays.py`: Generador autónomo de las capas de polvo celestial y fuga de luz.
+- `static/app.js`: Lógica del cliente, scrubber del timeline, snapping interactivo, e integración de `AbortController` para evitar condiciones de carrera.
+- `static/style.css`: Estilos de la aplicación.
+- `templates/index.html`: Plantilla principal del estudio web.
+- `assets/preset_transcriptions.json`: Base de datos pre-calibrada con marcas de tiempo exactas para los pasajes virales.
+- `assets/`: Biblioteca de música (`music/`), arte sacro (`visuals/`), miniaturas (`thumbnails/`) y overlays (`overlays/`).
+- `Dockerfile`: Multi-stage build (compila `whisper.cpp` estático sin dependencias dinámicas, instala FFmpeg y descarga `ggml-base.en.bin`).
+- `requirements.txt`: Dependencias Python (`fastapi`, `uvicorn`, `Pillow`, `numpy`, `pydantic`, `python-multipart`).
+- `run.sh`: Script de ejecución local en 1 clic.
 
 ---
 
-## 📁 Arquitectura del Código
+## ⚡ Cambios Recientes Realizados (v3.1.0)
 
-- `app.py`: Servidor FastAPI, endpoints REST (`/api/books`, `/api/chapter_info`, `/api/chapter_transcription`, `/api/transcribe`, `/api/presets`, `/api/render`, `GET/DELETE /api/videos`).
-- `downloader.py`: Scraper y descargador de BibleGateway para audio MP3 de David Suchet y texto de versículos. Manejo de nombres en español/inglés y códigos USFM (`JHN`, `PSA`, `PHP`, etc.).
-- `audio_engine.py`: Recorte con `ffprobe`/`ffmpeg`, realce vocal (highpass 75Hz + compresor broadcast), y mezcla con música duckeada al 15-18%.
-- `subtitles.py`: Transcripción nativa con `whisper-cli` (Metal GPU) y formateador `.ass` 1080x1920 con estilos customizados.
-- `video_engine.py`: Motor de composición FFmpeg con 3 modos de encuadre (`pitch_black`, `fullscreen`, `ambient`), máscaras redondeadas antialiased, viñetas, marca de agua y quemado de subtítulos.
-- `create_clip.py`: Interfaz CLI con argparse.
-- `templates/index.html`: UI del estudio web minimalista con timeline dual, cajón de lectura y vista previa de smartphone.
-- `static/style.css`: Sistema de diseño moderno, limpio y sin clutter (Apple/Linear dark aesthetic).
-- `static/app.js`: Lógica reactiva en cliente: scrubber drag & drop, snapping por frase, selector de música con preescucha y confirmación.
-- `assets/`:
-  - `visuals/`: Grabados tenebristas al aguafuerte, óleos de Jesucristo y miniaturas en `assets/thumbnails/`.
-  - `music/`: Pistas virales reales (`cloud9ine_magic.mp3`, `daniel_gods_creation.mp3`, `arcadefire_dimensions.mp3`, `emile_mosseri_jacob.mp3`, `salvia_palth_dream.mp3`, etc.).
-- `models/`: Modelo Whisper `ggml-base.en.bin`.
-- `cache/`: Audios en caché, archivos temporales y máscaras PNG.
-- `outputs/`: Videos finales generados (`.mp4`, 1080x1920).
+1. **Despliegue a Producción en Render**:
+   - El proyecto está desplegado y funcionando en `https://bible-studio.onrender.com`.
+   - Se configuró el puerto dinámico `PORT` en `Dockerfile` y `app.py`.
+2. **Compilación Estática de Whisper**:
+   - Se corrigió el error `exit status 127` en Linux compilando `whisper-cli` con `-DBUILD_SHARED_LIBS=OFF`.
+3. **Caché Instantánea de Pasajes Virales (0.05s)**:
+   - Se pre-calcularon los 7 pasajes virales clave en `assets/preset_transcriptions.json`. Al pulsar los botones rápidos en producción, responden al instante sin consumir CPU.
+4. **Prevención de Condiciones de Carrera (`AbortController`)**:
+   - En `static/app.js`, cualquier nuevo clic o movimiento de slider aborta peticiones anteriores en curso, evitando que textos viejos sobrescriban la selección actual.
+5. **Limpieza de Títulos y Entidades HTML**:
+   - En `downloader.py`, se eliminan etiquetas de encabezado `<h3>` (para que títulos como *"The Word became flesh"* no se metan en el versículo 1 de Juan 1) y se usa `html_lib.unescape` para limpiar `&nbsp;`.
+6. **Optimización de Memoria FFmpeg**:
+   - Se limitó FFmpeg a `-threads 2` y `-preset veryfast` para evitar que el renderizado de video sea eliminado por falta de memoria (OOM kill) en el contenedor de 512 MB RAM de Render.
 
 ---
 
-## ⚠️ Reglas y Buenas Prácticas de Desarrollo
+## 🎯 Puntos de Atención & Próximos Pasos para Claude Code
 
-1. **Evitar Bloqueos de SSL**: BibleGateway y otros servidores pueden requerir deshabilitar la verificación estricta de certificados SSL en scripts de scraping Python (`ssl.create_default_context()` con `check_hostname=False` y `verify_mode=ssl.CERT_NONE`).
-2. **Escapado de Rutas en Filtros FFmpeg**: Al pasar rutas de subtítulos a `subtitles=...` en FFmpeg, escapar siempre dos puntos `:` y barras invertidas `\` (`subtitle_ass.replace("\\", "/").replace(":", "\\:")`).
-3. **Dimensiones Pares para Códecs H.264**: Todo tamaño calculado para video o máscaras debe redondearse a números pares (`w - w % 2`), de lo contrario `libx264` lanzará un error de formato de píxeles `yuv420p`.
-4. **Miniaturas Web**: Nunca renderizar archivos `.mp4` dentro de etiquetas `<img>` HTML; utilizar siempre las miniaturas JPG generadas en `assets/thumbnails/`.
-5. **Panel Móvil Fijo (Sticky Preview)**: El contenedor `.preview-pane` en la columna derecha debe mantener `position: sticky; top: 80px; align-self: start;` y contener exclusivamente la tarjeta del mockup móvil (sin scroll interno ni elementos secundarios debajo) para garantizar que el smartphone permanezca 100% inmóvil al desplazarse por el editor.
-6. **Biblioteca de Videos en Columna Principal**: La galería de videos generados reside en la columna principal izquierda (debajo del dock de renderizado) con visualización en cuadrícula (`.history-gallery-grid`), orden cronológico inverso (`mtime` descendente), miniaturas 9:16 y títulos identificables legibles.
-7. **Arte Sacro y Enfoque Bíblico Estricto**: Utilizar exclusivamente arte sacro reverente (escenas del Antiguo y Nuevo Testamento, profetas, creación, milagros de Jesús) sin figuras o representaciones no deseadas (como santos o vírgenes ajenos a los pasajes evangélicos puros).
-8. **Ritmo Cinemático en Presentaciones**: Mantener ~4.5s por diapositiva con fundidos suaves (0.75s) como valor predeterminado para permitir la lectura y contemplación al ritmo de la narración de David Suchet.
-9. **Limpieza de Puertos Locales**: Al pausar o finalizar sesiones, asegurar que no queden procesos `uvicorn` o servidores `http.server` corriendo en segundo plano escuchando en puertos locales.
+1. **Capítulos Nuevos No Cacheados en la Nube (CPU Throttling)**:
+   - Los pasajes virales pre-cacheados cargan en 0.05s. Sin embargo, si un usuario selecciona un libro/capítulo nuevo no cacheado (ej. *Levítico 15*), la descarga del MP3 de BibleGateway y la posterior transcripción en el CPU compartido (0.1 vCPU) de Render puede tardar entre 25 y 45 segundos.
+   - *Mejora sugerida*: Pre-cachear más capítulos populares en `assets/preset_transcriptions.json`, o mostrar un spinner de progreso más detallado en la UI mientras se procesa un capítulo frío.
+2. **Renderizado de Video en la Nube vs Local**:
+   - En la Mac local (Apple M4), FFmpeg renderiza el video en 4 segundos usando aceleración por hardware Metal/VideoToolbox.
+   - En Render (0.1 vCPU), el renderizado es por software puro libx264. Asegurarse de mantener los hilos bajos y los presets rápidos.
+3. **Comandos para Correr en Local**:
+   ```bash
+   cd /Users/lolescaldaferro/Antigravity/TikTokBible
+   ./run.sh
+   ```
+4. **Comando para Desplegar a Producción**:
+   ```bash
+   git add .
+   git commit -m "tu mensaje"
+   git push origin main
+   # Render detecta el push a main y despliega en 2 minutos automáticamente.
+   ```

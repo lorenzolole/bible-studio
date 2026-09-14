@@ -1,6 +1,37 @@
-# Changelog — TikTok Bible Studio
+# Changelog — Bible Studio
 
 Todos los cambios notables de este proyecto se documentarán en este archivo siguiendo el formato [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
+
+## [3.1.0] - 2026-09-14
+
+### Agregado
+- **Despliegue a Producción en la Nube (Render.com Docker Web Service)**:
+  - Repositorio oficial publicado en GitHub: `lorenzolole/bible-studio`.
+  - Despliegue en vivo en: `https://bible-studio.onrender.com`.
+  - `Dockerfile` multi-stage autónomo compatible con Render y Hugging Face Spaces (UID 1000, puerto dinámico `$PORT` / 7860).
+  - CI/CD preparado con GitHub Actions (`.github/workflows/sync_to_hf.yml`).
+- **Caché Pre-Calibrada de Pasajes Virales (`assets/preset_transcriptions.json`)**:
+  - Transcripciones generadas con GPU y precisión de milisegundos para los pasajes clave (`John 3:16`, `Psalm 23:1-3`, `Psalm 91:1-2`, `Philippians 4:13`, `Proverbs 3:5-6`, `Isaiah 41:10`, `Romans 8:28`).
+  - Respuesta instantánea (0.05s) en producción sin carga de CPU en el servidor.
+- **Caché de Sesión en Memoria**:
+  - `SESSION_TRANSCRIPTION_CACHE` almacena en tiempo de ejecución cualquier fragmento transcrito para evitar re-procesamientos.
+
+### Corregido
+- **Compilación Estática de `whisper-cli`**:
+  - Corrección del error `exit status 127` en Linux mediante compilación con `-DBUILD_SHARED_LIBS=OFF` sobre `python:3.11-slim-bookworm`, incorporando `libwhisper` y `libggml` dentro del binario.
+  - Validación en tiempo de build con `whisper-cli --help`.
+- **Eliminación de Condiciones de Carrera (*Race Conditions*) en Frontend**:
+  - Integración de `AbortController` en `static/app.js`: toda nueva selección o movimiento del slider cancela inmediatamente peticiones anteriores en vuelo.
+  - Limpieza visual inmediata del texto viejo al cambiar de libro para evitar la persistencia de subtítulos anteriores.
+  - Aumento del debounce a 500ms al arrastrar tiradores del timeline.
+- **Limpieza de Entidades HTML en Scraper Bíblico**:
+  - Decodificación con `html.unescape` eliminando `&nbsp;`, `\xa0` y entidades crudas en el texto del pasaje.
+- **Optimización de Audio para Whisper**:
+  - Conversión automática de fragmentos a WAV 16kHz mono (`pcm_s16le`) y ejecución con `-t 2` para evitar colapsar la CPU compartida de la nube.
+- **Optimización de Memoria FFmpeg**:
+  - Configuración de `-threads 2` y `-preset veryfast` para garantizar que el renderizado de video en 1080×1920 permanezca dentro del límite de 512 MB RAM de contenedores gratuitos.
+
+---
 
 ## [3.0.1] - 2026-09-13
 

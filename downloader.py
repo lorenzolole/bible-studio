@@ -199,6 +199,7 @@ def fetch_passage_text(book_str: str, chapter: int) -> dict:
         clean_html = re.sub(r'<sup class="crossreference"[^>]*>.*?</sup>', '', clean_html, flags=re.DOTALL)
         clean_html = re.sub(r'<span class="chapternum"[^>]*>.*?</span>', '', clean_html, flags=re.DOTALL)
         clean_html = re.sub(r'<sup class="versenum"[^>]*>.*?</sup>', '', clean_html, flags=re.DOTALL)
+        clean_html = re.sub(r'<h[1-6][^>]*>.*?</h[1-6]>', '', clean_html, flags=re.DOTALL)
         
         spans = re.findall(r'<span[^>]*class="text [^"]*"[^>]*>(.*?)</span>', clean_html, flags=re.DOTALL)
         texts = []
