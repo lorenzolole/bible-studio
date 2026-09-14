@@ -1,0 +1,41 @@
+# Operating System
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Large Model Binaries (downloaded during Docker build or setup)
+models/*.bin
+!models/.gitkeep
+
+# Cache & Temporary files
+cache/*
+!cache/.gitkeep
+cache/audio/*
+cache/uploads/*
+
+# Generated Videos & Outputs
+outputs/*
+!outputs/.gitkeep
+outputs/thumbnails/*
+
+# Environment & Logs
+.env
+*.log
+
+# IDE & Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+assets/overlays/*.mov
+!assets/overlays/.gitkeep

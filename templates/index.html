@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bible Studio — Creator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Courier+Prime:wght@400;700&family=Playfair+Display:wght@600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css?v=2.7.0">
+</head>
+<body class="dark-theme">
+    <div class="app-container">
+        
+        <!-- TOP NAVBAR -->
+        <header class="top-nav">
+            <div class="nav-left">
+                <div class="brand-logo">
+                    <span class="brand-title">Bible Studio</span>
+                    <span class="brand-badge">Studio</span>
+                </div>
+            </div>
+
+            <div class="nav-center">
+                <div class="status-chip" id="systemStatusChip">
+                    <span class="chip-dot"></span>
+                    <span id="systemStatusText">David Suchet · NIV-UK</span>
+                </div>
+            </div>
+
+            <div class="nav-right">
+                <a href="/assets/visuals/tiktok_pfp_jesus.jpg" download="TikTok_PFP_Jesus_Claroscuro.jpg" class="btn-pfp-shortcut" title="Descargar Foto de Perfil Oficial en Alta Resolución para TikTok">
+                    <img src="/thumbnails/tiktok_pfp_jesus.jpg" alt="PFP" class="pfp-chip-avatar">
+                    <span>Foto de Perfil TikTok</span>
+                </a>
+                <span class="format-badge">1080 × 1920</span>
+                <span class="format-badge highlight">9:16 Vertical</span>
+            </div>
+        </header>
+
+        <!-- MAIN STUDIO WORKSPACE -->
+        <main class="studio-body">
+            
+            <!-- LEFT COLUMN: CREATOR PIPELINE & LIBRARY -->
+            <section class="editor-pane">
+                
+                <!-- STEP 1: AUDIO & BIBLE SOURCE -->
+                <div class="studio-card">
+                    <div class="card-head">
+                        <div class="card-title-group">
+                            <span class="step-label">01 / Pasaje y Audio</span>
+                            <h3>Selección de Pasaje</h3>
+                        </div>
+                    </div>
+
+                    <div class="card-content">
+                        <!-- Quick Viral Passages Selector -->
+                        <div class="viral-passages-bar mb-3">
+                            <div class="viral-passages-header">
+                                <span class="viral-passages-title">Pasajes Virales de TikTok</span>
+                                <span class="viral-passages-hint">1 clic para cargar y sincronizar</span>
+                            </div>
+                            <div class="viral-passages-scroll" id="viralPassagesContainer">
+                                <button type="button" class="passage-pill" data-book="John" data-chapter="3" data-start="120.0" data-end="133.0" data-citation="John 3:16">
+                                    <strong>John 3:16</strong>
+                                    <span>For God so loved the world</span>
+                                </button>
+                                <button type="button" class="passage-pill" data-book="Ps" data-chapter="23" data-start="3.0" data-end="17.0" data-citation="Psalm 23:1-3">
+                                    <strong>Psalm 23:1-3</strong>
+                                    <span>The Lord is my shepherd</span>
+                                </button>
+                                <button type="button" class="passage-pill" data-book="Ps" data-chapter="91" data-start="3.0" data-end="15.0" data-citation="Psalm 91:1-2">
+                                    <strong>Psalm 91:1-2</strong>
+                                    <span>Whoever dwells in the shelter</span>
+                                </button>
+                                <button type="button" class="passage-pill" data-book="Phil" data-chapter="4" data-start="131.5" data-end="138.5" data-citation="Philippians 4:13">
+                                    <strong>Philippians 4:13</strong>
+                                    <span>I can do all this through Christ</span>
+                                </button>
+                                <button type="button" class="passage-pill" data-book="Prov" data-chapter="3" data-start="29.5" data-end="43.0" data-citation="Proverbs 3:5-6">
+                                    <strong>Proverbs 3:5-6</strong>
+                                    <span>Trust in the Lord with all your heart</span>
+                                </button>
+                                <button type="button" class="passage-pill" data-book="Isa" data-chapter="41" data-start="99.0" data-end="114.0" data-citation="Isaiah 41:10">
+                                    <strong>Isaiah 41:10</strong>
+                                    <span>Do not fear, for I am with you</span>
+                                </button>
+                                <button type="button" class="passage-pill" data-book="Rom" data-chapter="8" data-start="277.0" data-end="292.0" data-citation="Romans 8:28">
+                                    <strong>Romans 8:28</strong>
+                                    <span>In all things God works for good</span>
+                                </button>
+                                <button type="button" class="passage-pill" data-book="1Cor" data-chapter="13" data-start="38.0" data-end="54.0" data-citation="1 Corinthians 13:4-7">
+                                    <strong>1 Corinthians 13:4-7</strong>
+                                    <span>Love is patient, love is kind</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="input-grid-3">
+                            <div class="control-box flex-2">
+                                <label>Libro</label>
+                                <select id="bookSelect" class="select-styled"></select>
+                            </div>
+                            <div class="control-box flex-1">
+                                <label>Capítulo</label>
+                                <select id="chapterSelect" class="select-styled"></select>
+                            </div>
+                            <div class="control-box flex-btn">
+                                <button id="btnLoadChapter" class="btn-primary-action">
+                                    Cargar Audio
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Audio Waveform / Scrubber Area -->
+                        <div id="audioPlayerArea" class="timeline-editor-card hidden">
+                            <div class="timeline-header">
+                                <div class="audio-current-label">
+                                    <strong id="audioSpeakerTitle">David Suchet (NIV-UK)</strong>
+                                </div>
+                                <div class="audio-timer">
+                                    <span id="currentTimeDisplay">00:00.0</span>
+                                    <span class="timer-separator">/</span>
+                                    <span id="totalDurationDisplay">00:00.0</span>
+                                </div>
+                            </div>
+
+                            <audio id="mainAudio" preload="metadata"></audio>
+
+                            <div class="timeline-bar-wrapper">
+                                <div class="timeline-track" id="timelineTrack">
+                                    <div class="timeline-waveform-bg" id="timelineWaveformBg"></div>
+                                    <div class="timeline-active-range" id="timelineActiveRange" title="Arrastrar para mover ventana de selección">
+                                        <div class="timeline-handle handle-start" id="handleStart" title="Arrastrar inicio">
+                                            <span class="handle-bar"></span>
+                                            <div class="handle-tooltip" id="tooltipStart">00:00.0</div>
+                                        </div>
+                                        <div class="range-drag-grip">
+                                            <span></span><span></span><span></span>
+                                        </div>
+                                        <div class="timeline-handle handle-end" id="handleEnd" title="Arrastrar fin">
+                                            <span class="handle-bar"></span>
+                                            <div class="handle-tooltip" id="tooltipEnd">00:15.0</div>
+                                        </div>
+                                    </div>
+                                    <div class="timeline-playhead" id="timelinePlayhead"></div>
+                                    <div class="timeline-hover-time hidden" id="timelineHoverTime">00:00.0</div>
+                                </div>
+                                <div class="timeline-scale" id="timelineScale">
+                                    <span>0:00</span>
+                                    <span id="timelineMidTime">0:30</span>
+                                    <span id="timelineTotalTime">1:00</span>
+                                </div>
+                            </div>
+
+                            <!-- Duration Preset Pills -->
+                            <div class="duration-presets-row">
+                                <span class="presets-label">Duración sugerida:</span>
+                                <div class="preset-pills">
+                                    <button class="pill-btn" data-dur="10">10s</button>
+                                    <button class="pill-btn active" data-dur="15">15s</button>
+                                    <button class="pill-btn" data-dur="30">30s</button>
+                                    <button class="pill-btn" data-dur="60">60s</button>
+                                    <button class="pill-btn" data-dur="full">Completo</button>
+                                </div>
+                            </div>
+
+                            <!-- Manual Precision Trimming Controls with Micro Steppers -->
+                            <div class="precision-trim-bar">
+                                <div class="trim-field">
+                                    <label>Inicio (seg)</label>
+                                    <div class="input-with-btn">
+                                        <button id="btnStartMinus" class="btn-micro-step" title="Restar 1s">-1s</button>
+                                        <input type="number" id="startSecInput" min="0" step="0.5" value="0.0" class="input-num-styled">
+                                        <button id="btnStartPlus" class="btn-micro-step" title="Sumar 1s">+1s</button>
+                                        <button id="btnSetStart" class="btn-micro" title="Fijar tiempo actual">Fijar</button>
+                                    </div>
+                                </div>
+
+                                <div class="trim-preview-btn-area">
+                                    <button id="btnPlayTrimmed" class="btn-playback">
+                                        Preescuchar selección
+                                    </button>
+                                </div>
+
+                                <div class="trim-field">
+                                    <label>Fin (seg)</label>
+                                    <div class="input-with-btn">
+                                        <button id="btnEndMinus" class="btn-micro-step" title="Restar 1s">-1s</button>
+                                        <input type="number" id="endSecInput" min="1" step="0.5" value="15.0" class="input-num-styled">
+                                        <button id="btnEndPlus" class="btn-micro-step" title="Sumar 1s">+1s</button>
+                                        <button id="btnSetEnd" class="btn-micro" title="Fijar tiempo actual">Fijar</button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="clip-summary-badge">
+                                Duración final: <strong id="clipDurationBadge">15.0s</strong>
+                            </div>
+
+                            <!-- Live Spoken Script Preview Box -->
+                            <div id="spokenScriptBox" class="spoken-script-card mt-3">
+                                <div class="spoken-script-header">
+                                    <span class="spoken-script-title">Texto hablado en el fragmento</span>
+                                    <span id="spokenWordsBadge" class="words-pill">0 palabras</span>
+                                </div>
+                                <div class="spoken-script-body">
+                                    <p id="spokenScriptText" class="spoken-script-text">Cargando transcripción...</p>
+                                </div>
+                            </div>
+
+                            <!-- Scripture Passage Reader Drawer -->
+                            <div class="passage-accordion-wrapper mt-3">
+                                <button id="btnTogglePassage" class="accordion-toggle-btn" type="button">
+                                    <span id="passageAccordionTitle">Leer texto del capítulo</span>
+                                    <span class="acc-chevron" id="passageChevron">▾</span>
+                                </button>
+                                <div id="passageContentArea" class="passage-drawer hidden">
+                                    <div class="passage-drawer-search">
+                                        <input type="text" id="verseSearchInput" placeholder="🔍 Buscar palabra o versículo para saltar directo (ej: loved the world)..." class="input-styled input-sm">
+                                    </div>
+                                    <div class="passage-phrases-interactive" id="passagePhrasesInteractive">
+                                        <!-- Interactive phrases with timestamps loaded here -->
+                                    </div>
+                                    <div class="passage-full-text-wrap mt-2">
+                                        <span class="passage-full-label">Texto Completo del Capítulo:</span>
+                                        <div class="passage-text-scroll" id="passageTextContainer">
+                                            Cargando texto bíblico...
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Scripture Citation -->
+                        <div class="control-box mt-3">
+                            <label>Cita en pantalla</label>
+                            <input type="text" id="citationInput" value="PSALM 23:1-3" class="input-text-styled" placeholder="Ej: PSALM 23:1-3">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- STEP 2: SYNCHRONIZED SUBTITLES (AI WHISPER) -->
+                <div class="studio-card" id="step2Card">
+                    <div class="card-head">
+                        <div class="card-title-group">
+                            <span class="step-label">02 / Tipografía</span>
+                            <h3>Subtítulos Sincronizados</h3>
+                        </div>
+                        <div class="card-head-actions">
+                            <label class="toggle-control" title="Activar o desactivar subtítulos">
+                                <input type="checkbox" id="subtitlesToggle" checked>
+                                <span class="toggle-slider"></span>
+                                <span class="toggle-text" id="subtitlesToggleText">Activados</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="card-content" id="subtitlesCardContent">
+                        <div class="subtitles-toolbar">
+                            <button id="btnAutoTranscribe" class="btn-secondary-action">
+                                Sincronizar con Whisper AI
+                            </button>
+                            <span id="transcribeStatus" class="subtitles-status-text">Listo</span>
+                        </div>
+
+                        <div class="phrases-scrollbox" id="phrasesListContainer">
+                            <p class="empty-phrases-notice">Carga un capítulo para revisar las frases sincronizadas.</p>
+                        </div>
+
+                        <div class="styles-selector-container mt-3">
+                            <label class="section-label">Estilo visual de subtítulos</label>
+                            <div class="styles-grid-modern">
+                                <div class="style-option selected" data-style="typewriter">
+                                    <div class="style-badge-preview font-typewriter">to your former life</div>
+                                    <div class="style-info">
+                                        <strong>Typewriter</strong>
+                                        <span>Monospace clásico</span>
+                                    </div>
+                                </div>
+
+                                <div class="style-option" data-style="spokenbyhim">
+                                    <div class="style-badge-preview font-spoken">you.</div>
+                                    <div class="style-info">
+                                        <strong>Spoken By Him</strong>
+                                        <span>Dorado tenue</span>
+                                    </div>
+                                </div>
+
+                                <div class="style-option" data-style="classicserif">
+                                    <div class="style-badge-preview font-serif">The Lord is my shepherd</div>
+                                    <div class="style-info">
+                                        <strong>Classic Serif</strong>
+                                        <span>Serif blanco clásico</span>
+                                    </div>
+                                </div>
+
+                                <div class="style-option" data-style="modern_bold">
+                                    <div class="style-badge-preview font-modern">I lack nothing</div>
+                                    <div class="style-info">
+                                        <strong>Modern Bold</strong>
+                                        <span>Sans-serif directo</span>
+                                    </div>
+                                </div>
+
+                                <div class="style-option" data-style="none">
+                                    <div class="style-badge-preview font-none">Limpio</div>
+                                    <div class="style-info">
+                                        <strong>Sin subtítulos</strong>
+                                        <span>Solo cita en pantalla</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="subtitle-options-grid mt-3">
+                                <div class="control-box">
+                                    <label class="section-label">Posición vertical</label>
+                                    <div class="segmented-control">
+                                        <button type="button" class="segment-btn active" data-sub-pos="bottom">Inferior</button>
+                                        <button type="button" class="segment-btn" data-sub-pos="center">Centro</button>
+                                    </div>
+                                </div>
+                                <div class="control-box">
+                                    <label class="section-label">Formato de texto</label>
+                                    <div class="segmented-control">
+                                        <button type="button" class="segment-btn active" data-text-case="original">Original</button>
+                                        <button type="button" class="segment-btn" data-text-case="uppercase">MAYÚSCULAS</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- STEP 3: VISUAL LOOP OR MULTI-PHOTO SLIDESHOW -->
+                <div class="studio-card">
+                    <div class="card-head">
+                        <div class="card-title-group">
+                            <span class="step-label">03 / Arte y Formato</span>
+                            <h3>Fondo Visual</h3>
+                        </div>
+                    </div>
+
+                    <div class="card-content">
+                        <div class="tabs-bar">
+                            <button class="tab-btn active" data-tab="single">Obras Individuales</button>
+                            <button class="tab-btn" data-tab="slideshow">Colecciones Temáticas</button>
+                        </div>
+
+                        <div id="tabSingleVisuals" class="tab-content-panel active">
+                            <div class="visuals-mode-toolbar">
+                                <label class="multi-select-toggle-label">
+                                    <input type="checkbox" id="chkMultiSelectVisuals" class="checkbox-styled">
+                                    <span>Selección múltiple libre (crear presentación)</span>
+                                </label>
+                                <span id="multiSelectCountBadge" class="multi-badge hidden">0 seleccionadas</span>
+                            </div>
+                            <div class="visuals-grid-modern" id="visualsGrid"></div>
+                        </div>
+
+                        <div id="tabSlideshowVisuals" class="tab-content-panel">
+                            <div class="collections-grid-modern" id="collectionsGrid"></div>
+                        </div>
+
+                        <div class="upload-compact-row mt-3">
+                            <label class="btn-upload-compact">
+                                <span>Subir archivo personal (MP4, JPG, PNG)</span>
+                                <input type="file" id="visualUploadInput" accept="image/*,video/mp4,image/gif" class="hidden-file-input">
+                            </label>
+                        </div>
+
+                        <!-- Framing & Canvas Mode -->
+                        <div class="control-box mt-3">
+                            <label class="section-label">Estilo de Lienzo & Fondo</label>
+                            <div class="framing-modes-row">
+                                <button type="button" class="framing-mode-btn active" data-framing="pitch_black">
+                                    <div class="framing-badge-icon">⬛</div>
+                                    <div class="framing-info">
+                                        <strong>Fondo Negro Puro</strong>
+                                        <span>Minimalista viral (@nehzro)</span>
+                                    </div>
+                                </button>
+                                <button type="button" class="framing-mode-btn" data-framing="fullscreen">
+                                    <div class="framing-badge-icon">📱</div>
+                                    <div class="framing-info">
+                                        <strong>Pantalla Completa 9:16</strong>
+                                        <span>Cinemático sangrado total (@nanagoes5)</span>
+                                    </div>
+                                </button>
+                                <button type="button" class="framing-mode-btn" data-framing="ambient">
+                                    <div class="framing-badge-icon">🌫️</div>
+                                    <div class="framing-info">
+                                        <strong>Marco Clásico</strong>
+                                        <span>Fondo atenuado con sombras</span>
+                                    </div>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="control-box mt-3" id="radiusSliderBox">
+                            <div class="slider-header-modern">
+                                <label>Radio de esquinas del marco</label>
+                                <span id="radiusVal" class="value-chip">42px</span>
+                            </div>
+                            <input type="range" id="radiusSlider" min="10" max="80" value="42" class="range-slider">
+                        </div>
+
+                        <div class="control-box mt-3">
+                            <label class="section-label">Acabado del Marco</label>
+                            <div class="frame-styles-row">
+                                <button type="button" class="frame-style-btn active" data-frame="vintage">
+                                    Dorado Clásico
+                                </button>
+                                <button type="button" class="frame-style-btn" data-frame="minimal">
+                                    Minimalista Suave
+                                </button>
+                                <button type="button" class="frame-style-btn" data-frame="glow">
+                                    Resplandor
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="control-box mt-3 hidden" id="slideshowPacingContainer">
+                            <label class="section-label">Ritmo de Diapositivas (Solo para múltiples obras)</label>
+                            <div class="pacing-selector-row">
+                                <button type="button" class="pacing-btn active" data-pacing="cinematic">
+                                    <div class="pacing-info">
+                                        <strong>Cinemático (~4.5s)</strong>
+                                        <span>Fundidos suaves para contemplar</span>
+                                    </div>
+                                </button>
+                                <button type="button" class="pacing-btn" data-pacing="dynamic">
+                                    <div class="pacing-info">
+                                        <strong>Rápido (~2.4s)</strong>
+                                        <span>Cortes rítmicos entre obras</span>
+                                    </div>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Cinematic Atmosphere & Viral FX (v3.0) -->
+                        <div class="control-box mt-3" id="cinematicFxContainer">
+                            <div class="slider-header-modern">
+                                <label class="section-label">Atmósfera & Efectos Cinemáticos (Viral FX)</label>
+                                <span class="value-chip font-sans">v3.0 Ultra</span>
+                            </div>
+                            <div class="cinematic-fx-grid">
+                                <label class="fx-toggle-card">
+                                    <input type="checkbox" id="chkParticles" checked class="checkbox-styled">
+                                    <div class="fx-toggle-info">
+                                        <strong>✨ Polvo Celestial</strong>
+                                        <span>Partículas de luz dorada flotantes</span>
+                                    </div>
+                                </label>
+                                <label class="fx-toggle-card">
+                                    <input type="checkbox" id="chkLightLeak" checked class="checkbox-styled">
+                                    <div class="fx-toggle-info">
+                                        <strong>🌅 Fuga de Luz Cálida</strong>
+                                        <span>Destello ámbar inicial (Hook 0-2s)</span>
+                                    </div>
+                                </label>
+                                <label class="fx-toggle-card">
+                                    <input type="checkbox" id="chkDynamicMotion" checked class="checkbox-styled">
+                                    <div class="fx-toggle-info">
+                                        <strong>🎥 Movimiento Cinemático Suave</strong>
+                                        <span>Slow push-in continuo (sin temblores)</span>
+                                    </div>
+                                </label>
+                                <label class="fx-toggle-card">
+                                    <input type="checkbox" id="chkFilmGrain" checked class="checkbox-styled">
+                                    <div class="fx-toggle-info">
+                                        <strong>🎞️ Grano Fílmico 35mm</strong>
+                                        <span>Textura analógica solemne</span>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Creator Handle / Watermark Input -->
+                        <div class="control-box mt-3">
+                            <div class="slider-header-modern">
+                                <label>Marca de agua / Canal del Creador (Opcional)</label>
+                                <span class="value-chip font-sans">TikTok / Reels</span>
+                            </div>
+                            <input type="text" id="watermarkInput" placeholder="Ej: @tucanalbiblico" class="input-styled" maxlength="35">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- STEP 4: BACKGROUND MELODY -->
+                <div class="studio-card">
+                    <div class="card-head">
+                        <div class="card-title-group">
+                            <span class="step-label">04 / Sonido</span>
+                            <h3>Música de Fondo</h3>
+                        </div>
+                    </div>
+
+                    <div class="card-content">
+                        <div class="music-cards-grid" id="musicGrid"></div>
+
+                        <!-- Active Music Status Bar -->
+                        <div class="active-music-bar mt-3" id="activeMusicBar">
+                            <div class="active-music-info">
+                                <span class="active-music-dot"></span>
+                                <span class="active-music-label">Pista activa:</span>
+                                <strong id="activeMusicName">Cargando...</strong>
+                            </div>
+                            <span id="activeMusicVolBadge" class="active-music-vol">16%</span>
+                        </div>
+
+                        <div class="upload-compact-row mt-3">
+                            <label class="btn-upload-compact">
+                                <span>Subir música propia (MP3 o WAV)</span>
+                                <input type="file" id="musicUploadInput" accept="audio/mp3,audio/wav,audio/m4a" class="hidden-file-input">
+                            </label>
+                        </div>
+
+                        <div class="control-box mt-3">
+                            <div class="slider-header-modern">
+                                <label>Volumen de música</label>
+                                <span id="volumeVal" class="value-chip">16%</span>
+                            </div>
+                            <input type="range" id="volumeSlider" min="0" max="50" value="16" class="range-slider">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- RENDER ACTION BAR -->
+                <div class="render-action-dock">
+                    <button id="btnRenderVideo" class="btn-create-tiktok">
+                        Generar Video Vertical (9:16)
+                    </button>
+
+                    <div id="renderStatus" class="render-progress-card hidden">
+                        <div class="status-icon-box">
+                            <div id="renderSpinner" class="progress-spinner"></div>
+                            <div id="renderSuccessIcon" class="progress-success-icon hidden">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                            </div>
+                        </div>
+                        <div class="progress-details">
+                            <span id="renderStatusText" class="progress-title">Procesando video...</span>
+                            <span id="renderStatusSub" class="progress-sub">Renderizado con FFmpeg en alta resolución</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- STEP 5: VIDEO LIBRARY -->
+                <div class="studio-card mt-4">
+                    <div class="card-head">
+                        <div class="card-title-group">
+                            <span class="step-label">Biblioteca</span>
+                            <h3>Videos Generados</h3>
+                        </div>
+                    </div>
+                    <div class="card-content">
+                        <div id="historyList" class="history-gallery-grid">
+                            <p class="empty-history-text">Los videos generados aparecerán aquí.</p>
+                        </div>
+                    </div>
+                </div>
+
+            </section>
+
+            <!-- RIGHT COLUMN: FIXED STICKY MOBILE PREVIEW -->
+            <section class="preview-pane">
+                <div class="phone-stage-card">
+                    <div class="stage-top-bar">
+                        <span class="stage-label">Vista Previa</span>
+                        <span class="aspect-chip">9:16 · 1080×1920</span>
+                    </div>
+
+                    <!-- PHONE MOCKUP (IPHONE MODERN SILHOUETTE) -->
+                    <div class="phone-mockup">
+                        <div class="phone-island"></div>
+                        
+                        <div id="previewBg" class="phone-ambient-blur"></div>
+
+                        <div class="phone-canvas">
+                            <div id="previewFgBox" class="phone-media-frame">
+                                <img id="previewImage" src="/assets/visuals/jesus_good_shepherd.jpg" alt="Preview">
+                                <video id="previewVideo" loop muted playsinline class="hidden"></video>
+                            </div>
+                        </div>
+
+                        <div class="phone-captions-layer">
+                            <div id="previewCaptionText" class="caption-bubble font-typewriter">
+                                The Lord is my shepherd
+                            </div>
+                            <div id="previewCitationText" class="citation-label">
+                                — PSALM 23:1-3 —
+                            </div>
+                            <div id="previewWatermark" class="phone-watermark-overlay hidden">
+                                @canal
+                            </div>
+                        </div>
+
+                        <video id="renderedVideoPlayer" controls playsinline class="rendered-video-layer hidden"></video>
+                    </div>
+
+                    <div id="downloadArea" class="download-action-card hidden">
+                        <a id="btnDownload" href="#" download class="btn-download-mp4">
+                            Descargar Video (.mp4)
+                        </a>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <script src="/static/app.js?v=2.7.0"></script>
+</body>
+</html>
